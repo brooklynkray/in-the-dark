@@ -57,3 +57,15 @@ def identify_target(target):
         return "hostname"
 
     return "invalid"
+
+def create_target(target):
+    target = target.strip()
+    target_type = identify_target(target)
+
+    if target_type == "invalid":
+        return None
+
+    return TargetInfo(
+        value=target,
+        type=target_type
+    )
