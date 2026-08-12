@@ -24,3 +24,12 @@ def is_root():
 
 def get_nmap_path():
     return shutil.which("nmap")
+
+def is_sudo_available():
+    result = subprocess.run(
+        ["sudo", "-n", "-v"],
+        capture_output=True,
+        text=True
+    )
+
+    return result.returncode == 0
