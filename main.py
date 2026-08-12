@@ -3,6 +3,36 @@
 import target
 
 
+def display_target_info(target_info):
+    print()
+    print("Target information")
+    print("------------------")
+    print(f"Target:       {target_info.value}")
+    print(f"Type:         {target_info.type}")
+
+    print()
+    print("DNS information")
+    print("---------------")
+
+    if target_info.type == "hostname":
+        if target_info.resolved_addresses:
+            print("Resolved addresses:")
+
+            for address in target_info.resolved_addresses:
+                print(f"  {address}")
+        else:
+            print("No DNS addresses found.")
+
+    else:
+        if target_info.reverse_dns:
+            print("Reverse DNS:")
+
+            for hostname in target_info.reverse_dns:
+                print(f"  {hostname}")
+        else:
+            print("No reverse DNS records found.")
+
+
 def get_target_from_user():
     while True:
         print()
@@ -25,14 +55,11 @@ def get_target_from_user():
             )
             continue
 
-        print()
-        print("Target information")
-        print("------------------")
-        print(f"Target:       {target_info.value}")
-        print(f"Type:         {target_info.type}")
-        print("Reverse DNS:  Not checked")
-        print()
+        target_info = target.enrich_target(target_info)
 
+        display_target_info(target_info)
+
+        print()
         print("Is this target correct?")
         print("[1] Yes, continue")
         print("[2] Enter different target")
