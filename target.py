@@ -1,3 +1,4 @@
+import dns
 import ipaddress
 import re
 from dataclasses import dataclass, field
@@ -69,3 +70,18 @@ def create_target(target):
         value=target,
         type=target_type
     )
+
+def enrich_target(target_info):
+    if target_info.type == "hostname":
+        results = dns.resolve_hostname(target_info.value)
+
+        target_info.resolved_addresses = (
+            results["ipv4"] + results["ipv6"]
+        )
+
+    elif target_info.type in ("IPv4", "IPv6"):
+        target_info.reverse_dns = dns.reverse_lookup(
+            target_info.value
+        )
+
+    return target_info
