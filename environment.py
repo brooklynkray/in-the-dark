@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 
 
@@ -19,3 +20,7 @@ def is_root():
     )
 
     return result.stdout.strip() == "0"
+
+
+def get_nmap_path():
+    return shutil.which("nmap")
