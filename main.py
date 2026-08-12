@@ -4,16 +4,28 @@ import target
 
 
 def display_target_info(target_info):
+    """
+    Display the information discovered about the target.
+    """
+
     print()
     print("Target information")
     print("------------------")
     print(f"Target:       {target_info.value}")
-    print(f"Type:         {target_info.type}")
+
+    # Make the target type clearer for the user.
+    if target_info.type == "IPv4":
+        print("Type:         IPv4 address")
+    elif target_info.type == "IPv6":
+        print("Type:         IPv6 address")
+    else:
+        print(f"Type:         {target_info.type}")
 
     print()
     print("DNS information")
     print("---------------")
 
+    # Hostnames are resolved into IP addresses.
     if target_info.type == "hostname":
         if target_info.resolved_addresses:
             print("Resolved addresses:")
@@ -21,8 +33,10 @@ def display_target_info(target_info):
             for address in target_info.resolved_addresses:
                 print(f"  {address}")
         else:
+            # DNS failure does not make the target invalid.
             print("No DNS addresses found.")
 
+    # IP addresses can be checked using reverse DNS.
     else:
         if target_info.reverse_dns:
             print("Reverse DNS:")
@@ -34,16 +48,22 @@ def display_target_info(target_info):
 
 
 def get_target_from_user():
+    """
+    Ask the user for a target and return a confirmed TargetInfo object.
+    """
+
     while True:
         print()
         print("=" * 50)
         print("TARGET")
         print("=" * 50)
 
+        # Get the target entered by the user.
         target_input = input(
             "Enter the target IP address or hostname: "
         ).strip()
 
+        # Let target.py validate and classify the input.
         target_info = target.create_target(target_input)
 
         if target_info is None:
@@ -55,8 +75,10 @@ def get_target_from_user():
             )
             continue
 
+        # Enrich the target with available DNS information.
         target_info = target.enrich_target(target_info)
 
+        # Display everything we discovered so far.
         display_target_info(target_info)
 
         print()
@@ -67,6 +89,7 @@ def get_target_from_user():
 
         choice = input("> ").strip().lower()
 
+        # Accept both numbers and natural yes/no responses.
         if choice in ("1", "y", "yes"):
             return target_info
 
@@ -81,11 +104,17 @@ def get_target_from_user():
 
 
 def main():
+    """
+    Main application entry point.
+    """
+
     print("In the Dark")
     print("Guided security reconnaissance and enumeration")
 
+    # Get a validated and confirmed target from the user.
     target_info = get_target_from_user()
 
+    # None means the user chose to exit.
     if target_info is None:
         return
 
@@ -93,6 +122,7 @@ def main():
     print(f"Target confirmed: {target_info.value}")
 
 
+# Handle Ctrl+C gracefully instead of displaying a Python traceback.
 if __name__ == "__main__":
     try:
         main()
