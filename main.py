@@ -10,14 +10,19 @@ def get_target_from_user():
         print("TARGET")
         print("=" * 50)
 
-        target_input = input("Enter the target IP address or hostname: ").strip()
+        target_input = input(
+            "Enter the target IP address or hostname: "
+        ).strip()
 
         target_info = target.create_target(target_input)
 
         if target_info is None:
             print()
             print("✗ Invalid target.")
-            print("Please enter a valid IPv4 address, IPv6 address, or hostname.")
+            print(
+                "Please enter a valid IPv4 address, IPv6 address, "
+                "or hostname."
+            )
             continue
 
         print()
@@ -25,7 +30,7 @@ def get_target_from_user():
         print("------------------")
         print(f"Target:       {target_info.value}")
         print(f"Type:         {target_info.type}")
-        print(f"Reverse DNS:  Not checked")
+        print("Reverse DNS:  Not checked")
         print()
 
         print("Is this target correct?")
@@ -33,19 +38,19 @@ def get_target_from_user():
         print("[2] Enter different target")
         print("[3] Exit")
 
-        choice = input("> ").strip()
+        choice = input("> ").strip().lower()
 
-        if choice == "1":
+        if choice in ("1", "y", "yes"):
             return target_info
 
-        if choice == "2":
+        if choice in ("2", "n", "no"):
             continue
 
-        if choice == "3":
+        if choice in ("3", "q", "quit", "exit"):
             print("Exiting In the Dark.")
             return None
 
-        print("Invalid choice. Please select 1, 2, or 3.")
+        print("Invalid choice. Please enter yes, no, or exit.")
 
 
 def main():
@@ -62,4 +67,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nExiting In the Dark.")
