@@ -1,5 +1,14 @@
 import ipaddress
 import re
+from dataclasses import dataclass, field
+
+
+@dataclass
+class TargetInfo:
+    value: str
+    type: str
+    reverse_dns: list[str] = field(default_factory=list)
+    resolved_addresses: list[str] = field(default_factory=list)
 
 
 def is_valid_hostname(hostname):
