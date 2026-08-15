@@ -26,10 +26,10 @@ def display_target_info(target_info):
     # Hostnames are resolved into IP addresses.
     if target_info.type == "hostname":
         if target_info.resolved_addresses:
-            print("Resolved addresses:")
-
-            for address in target_info.resolved_addresses:
-                print(f"  {address}")
+            cli.list_items(
+                "Resolved addresses",
+                target_info.resolved_addresses,
+            )
         else:
             # DNS failure does not make the target invalid.
             cli.info("No DNS addresses found.")
@@ -37,10 +37,7 @@ def display_target_info(target_info):
     # IP addresses can be checked using reverse DNS.
     else:
         if target_info.reverse_dns:
-            print("Reverse DNS:")
-
-            for hostname in target_info.reverse_dns:
-                print(f"  {hostname}")
+            cli.list_items("Reverse DNS", target_info.reverse_dns)
         else:
             cli.info("No reverse DNS records found.")
 

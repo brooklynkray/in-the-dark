@@ -244,6 +244,25 @@ def field(label: str, value: str, width: int = 14) -> None:
     print(f"{(label + ':').ljust(width)}{value}")
 
 
+def list_items(title: str, items: list[str]) -> None:
+    """
+    Print a titled, indented list, e.g.:
+
+        Resolved addresses:
+          10.10.10.22
+          10.10.10.23
+
+    No colour is applied, matching the plain print() calls this
+    replaces - callers decide whether the list is worth showing at
+    all (an empty list is a caller-level decision, not this
+    function's to make).
+    """
+    print(f"{title}:")
+
+    for item in items:
+        print(f"  {item}")
+
+
 def menu(options: list[tuple[str, str]]) -> None:
     """
     Print a list of numbered/keyed choices, e.g.:
