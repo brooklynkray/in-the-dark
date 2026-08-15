@@ -36,11 +36,16 @@ def get_nmap_path():
 
 
 def is_sudo_available():
-    result = subprocess.run(
-        ["sudo", "-n", "-v"],
-        capture_output=True,
-        text=True
-    )
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "-v"],
+            capture_output=True,
+            text=True
+        )
+    except FileNotFoundError:
+        # sudo isn't installed on this system at all, so it can't be
+        # available for use. Some minimal environments don't ship it.
+        return False
 
     return result.returncode == 0
 
