@@ -41,6 +41,8 @@ FLAG_TIMING_T1 = "-T1"
 FLAG_TIMING_T2 = "-T2"
 FLAG_TIMING_T4 = "-T4"
 FLAG_TIMING_T5 = "-T5"
+FLAG_TECHNIQUE_CONNECT = "-sT"
+FLAG_TECHNIQUE_SYN = "-sS"
 
 
 class PortScope(Enum):
@@ -62,6 +64,19 @@ class Timing(Enum):
     T5 = "t5"
 
 
+class Technique(Enum):
+    """
+    How Nmap probes each port: a full TCP handshake or a half-open
+    SYN probe. UDP is a separate, additive concept in real Nmap usage
+    (it combines with a TCP technique rather than replacing it), so
+    it does not belong as a third member of this enum - it should
+    become its own field if/when it's added.
+    """
+
+    CONNECT = "connect"
+    SYN = "syn"
+
+
 @dataclass(frozen=True)
 class ScanConfig:
     """
@@ -70,15 +85,21 @@ class ScanConfig:
     profiles, and (later) expert/manual mode all converge on before
     build_argv() turns it into a command.
 
-    The defaults here match Nmap's own sensible defaults (top 1000
-    TCP ports, normal timing) plus service detection, since that is
-    the most useful starting point for a learner - but callers must
-    still show the chosen values, never assume them silently.
+    The defaults here match Nmap's own sensible defaults for port
+    scope (top 1000 TCP ports) and timing (normal), plus service
+    detection. The technique default (Connect) is a deliberate
+    exception: Nmap's own default technique depends on runtime
+    privilege, which this dataclass has no way to know and shouldn't -
+    Connect is instead the only technique that works identically in
+    every environment, which matters more for a learner's default
+    than mirroring Nmap's own conditional choice. Callers must still
+    show every chosen value, never assume it silently.
     """
 
     port_scope: PortScope = PortScope.TOP_1000
     service_detection: bool = True
     timing: Timing = Timing.T3
+    technique: Technique = Technique.CONNECT
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +233,31 @@ TIMING_INFO = {
     ),
 }
 
+TECHNIQUE_INFO = {
+    Technique.CONNECT: CapabilityInfo(
+        name="TCP Connect",
+        what="Completes a full TCP three-way handshake with each "
+             "port, like a normal application connection.",
+        why="Works without any special privileges, so it runs in "
+            "any environment - including this tool's own default.",
+        flag=FLAG_TECHNIQUE_CONNECT,
+        cost="Slower and easier to log than a SYN scan, since every "
+             "port gets a fully completed connection.",
+    ),
+    Technique.SYN: CapabilityInfo(
+        name="TCP SYN",
+        what="Sends a SYN packet and inspects the response without "
+             "completing the handshake (a 'half-open' scan).",
+        why="Faster and stealthier than a full Connect scan, and is "
+            "Nmap's own preferred technique when it's available.",
+        flag=FLAG_TECHNIQUE_SYN,
+        cost="Requires raw-packet privileges (root on Linux/macOS, "
+             "Administrator on Windows). Without them, Nmap refuses "
+             "to run this scan and exits with a privilege error - it "
+             "will not silently fall back to a Connect scan.",
+    ),
+}
+
 
 # ---------------------------------------------------------------------------
 # Command construction
@@ -223,21 +269,37 @@ def build_argv(target_info, scan_config):
     list, in canonical order:
 
         1. nmap
-        2. port-scope option, if one exists
-        3. service/version detection, if enabled
-        4. timing option, if one exists
-        5. target
+        2. scan technique
+        3. port-scope option, if one exists
+        4. service/version detection, if enabled
+        5. timing option, if one exists
+        6. target
 
     Pure and deterministic: no subprocess, no printing, no shell
-    involvement. The target is always appended as exactly one
-    element at the end - never concatenated with flags, never split,
-    never passed through a shell. Later capabilities (scan technique,
-    custom ports, NSE, ...) get inserted as further explicit steps in
-    this same sequence, at defined positions - this function is not
-    meant to become a loop over metadata.
+    involvement, no privilege awareness - this function has no idea
+    whether the current session can actually run the technique it's
+    told to emit, and it must never guess. Unlike port scope and
+    timing, the scan technique has no "Nmap default" that can be
+    represented by omitting a flag: Nmap's own default depends on
+    runtime privilege, which this function deliberately knows
+    nothing about. Both techniques therefore always emit an explicit
+    flag, so the previewed and executed command can never silently
+    differ depending on who runs it.
+
+    The target is always appended as exactly one element at the end -
+    never concatenated with flags, never split, never passed through
+    a shell. Later capabilities (custom ports, NSE, ...) get inserted
+    as further explicit steps in this same sequence, at defined
+    positions - this function is not meant to become a loop over
+    metadata.
     """
 
     argv = ["nmap"]
+
+    if scan_config.technique == Technique.CONNECT:
+        argv.append(FLAG_TECHNIQUE_CONNECT)
+    elif scan_config.technique == Technique.SYN:
+        argv.append(FLAG_TECHNIQUE_SYN)
 
     if scan_config.port_scope == PortScope.COMMON:
         argv.append(FLAG_COMMON_PORTS)

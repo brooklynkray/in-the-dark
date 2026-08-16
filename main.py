@@ -210,11 +210,51 @@ def ask_timing(default):
         )
 
 
+def ask_technique(default):
+    """
+    Ask which TCP scan technique to use and return the chosen
+    scan.Technique. `default` is shown explicitly, for the same
+    reason as ask_port_scope(). This function has no idea whether the
+    current session can actually run either technique - that's shown
+    separately, in the preview.
+    """
+
+    cli.subsection("Scan technique")
+
+    options = list(scan.Technique)
+    default_index = options.index(default) + 1
+
+    for index, technique in enumerate(options, start=1):
+        info = scan.TECHNIQUE_INFO[technique]
+        marker = " (default)" if technique == default else ""
+        cli.menu([(str(index), f"{info.name}{marker}")])
+        cli.info(f"{info.what} {info.why}")
+        cli.info(f"Cost: {info.cost}")
+
+    print()
+
+    while True:
+        choice = input(f"> [{default_index}] ").strip()
+
+        if not choice:
+            return default
+
+        if choice in [str(i) for i in range(1, len(options) + 1)]:
+            return options[int(choice) - 1]
+
+        cli.warning(
+            f"Invalid choice. Please enter a number from 1 to {len(options)}."
+        )
+
+
 def get_scan_config_from_user(current=None):
     """
     Ask the guided questions and return a scan.ScanConfig. This is a
-    thin layer over ask_port_scope() / ask_service_detection() /
-    ask_timing() - it holds no command-building logic of its own.
+    thin layer over ask_technique() / ask_port_scope() /
+    ask_service_detection() / ask_timing() - it holds no
+    command-building logic of its own. Questions are asked in the
+    same order build_argv() emits their flags, so the guided flow
+    reads in the same order as the command it produces.
 
     `current` is the previous ScanConfig, if any (passed in when the
     user declined a preview and chose to reconfigure). Its values are
@@ -227,21 +267,31 @@ def get_scan_config_from_user(current=None):
     defaults = current if current is not None else scan.ScanConfig()
 
     return scan.ScanConfig(
+        technique=ask_technique(defaults.technique),
         port_scope=ask_port_scope(defaults.port_scope),
         service_detection=ask_service_detection(defaults.service_detection),
         timing=ask_timing(defaults.timing),
     )
 
 
-def display_scan_preview(target_info, scan_config):
+def display_scan_preview(target_info, scan_config, elevated):
     """
     Show the chosen scan configuration, its purpose, and the exact
     command that would run. The command is derived from
     scan.build_argv() - there is no separate, hand-written preview
     string to drift out of sync with it.
+
+    `elevated` is the current session's privilege state, from
+    environment.py. It is used only to show an informational warning
+    when Technique.SYN is selected without privilege - it never
+    blocks a choice, never changes scan_config, and never changes the
+    argv that gets built or executed.
     """
 
     cli.subsection("Scan configuration")
+
+    technique_info = scan.TECHNIQUE_INFO[scan_config.technique]
+    cli.list_items("Technique", [technique_info.name])
 
     port_info = scan.PORT_SCOPE_INFO[scan_config.port_scope]
     cli.list_items("Port scope", [port_info.name])
@@ -252,7 +302,8 @@ def display_scan_preview(target_info, scan_config):
     timing_info = scan.TIMING_INFO[scan_config.timing]
     cli.list_items("Timing", [timing_info.name])
 
-    purpose = port_info.why
+    purpose = technique_info.why
+    purpose = f"{purpose} {port_info.why}"
     if scan_config.service_detection:
         purpose = f"{purpose} {scan.SERVICE_DETECTION_INFO.why}"
     purpose = f"{purpose} {timing_info.why}"
@@ -260,6 +311,14 @@ def display_scan_preview(target_info, scan_config):
     print()
     print("Purpose:")
     print(f"  {purpose}")
+
+    if scan_config.technique == scan.Technique.SYN and not elevated:
+        print()
+        cli.warning(
+            "This session does not appear to have elevated privileges. "
+            "Nmap will likely refuse to run a SYN scan and exit with a "
+            "privilege error rather than completing it."
+        )
 
     argv = scan.build_argv(target_info, scan_config)
 
@@ -269,7 +328,7 @@ def display_scan_preview(target_info, scan_config):
     print(f"  {' '.join(argv)}")
 
 
-def get_confirmed_scan_config(target_info):
+def get_confirmed_scan_config(target_info, elevated):
     """
     Run the guided question flow, show the preview, and ask for
     explicit consent. Declining returns to the questions so the user
@@ -277,6 +336,10 @@ def get_confirmed_scan_config(target_info):
     defaults rather than resetting them. Exiting cancels the scan
     configuration entirely. Nothing is ever executed from here either
     way - this only ever returns a ScanConfig or None.
+
+    `elevated` is passed straight through to display_scan_preview()
+    for the SYN-without-privilege warning - see that function's
+    docstring for what it does and doesn't affect.
     """
 
     scan_config = None
@@ -284,7 +347,7 @@ def get_confirmed_scan_config(target_info):
     while True:
         scan_config = get_scan_config_from_user(scan_config)
 
-        display_scan_preview(target_info, scan_config)
+        display_scan_preview(target_info, scan_config, elevated)
 
         print()
         while True:
@@ -346,6 +409,12 @@ def show_startup_sequence():
     and VPN awareness are future work and deliberately have no status
     line yet - adding one now would mean faking a result, which this
     CLI is explicitly not meant to do.
+
+    Returns whether the current session appears to have elevated
+    privileges, so main() can pass it on to the scan-preview step's
+    SYN-without-privilege warning. If detection failed outright, this
+    conservatively reports False rather than claiming a privilege
+    level that was never actually confirmed.
     """
 
     cli.banner()
@@ -385,13 +454,15 @@ def show_startup_sequence():
     cli.rule()
     print("\nReady.\n")
 
+    return env.elevated if env is not None else False
+
 
 def main():
     """
     Main application entry point.
     """
 
-    show_startup_sequence()
+    elevated = show_startup_sequence()
 
     # Get a validated and confirmed target from the user.
     target_info = get_target_from_user()
@@ -404,7 +475,7 @@ def main():
     cli.success(f"Target confirmed: {target_info.value}")
 
     # Guided questions -> ScanConfig -> preview -> explicit consent.
-    scan_config = get_confirmed_scan_config(target_info)
+    scan_config = get_confirmed_scan_config(target_info, elevated)
 
     # None means the user chose to exit instead of confirming a scan.
     if scan_config is None:
