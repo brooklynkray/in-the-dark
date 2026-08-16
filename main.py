@@ -102,26 +102,29 @@ def get_target_from_user():
             cli.warning("Invalid choice. Please enter yes, no, or exit.")
 
 
-def ask_port_scope():
+def ask_port_scope(default):
     """
     Ask which ports to scan and return the chosen scan.PortScope.
 
     This function only asks a question and reads input - it does not
     know what flag any option maps to, that is scan.build_argv()'s
-    job. The default is shown explicitly rather than assumed.
+    job. `default` is shown explicitly (marked, and pre-selected on
+    blank input) rather than assumed - the caller decides what counts
+    as the default, so a reconfigure pass can pre-select the previous
+    answer instead of always resetting to scan.ScanConfig()'s
+    built-in defaults.
     """
 
     cli.subsection("Port scope")
 
-    options = [scan.PortScope.COMMON, scan.PortScope.TOP_1000, scan.PortScope.ALL_TCP]
-    default = scan.ScanConfig().port_scope
+    options = list(scan.PortScope)
     default_index = options.index(default) + 1
 
     for index, port_scope in enumerate(options, start=1):
         info = scan.PORT_SCOPE_INFO[port_scope]
         marker = " (default)" if port_scope == default else ""
-        print(f"[{index}] {info.name}{marker}")
-        print(f"    {info.what} {info.why}")
+        cli.menu([(str(index), f"{info.name}{marker}")])
+        cli.info(f"{info.what} {info.why}")
 
     print()
 
@@ -131,26 +134,27 @@ def ask_port_scope():
         if not choice:
             return default
 
-        if choice in ("1", "2", "3"):
+        if choice in [str(i) for i in range(1, len(options) + 1)]:
             return options[int(choice) - 1]
 
-        cli.warning("Invalid choice. Please enter 1, 2, or 3.")
+        cli.warning(
+            f"Invalid choice. Please enter a number from 1 to {len(options)}."
+        )
 
 
-def ask_service_detection():
+def ask_service_detection(default):
     """
     Ask whether to enable service/version detection (-sV) and return
-    a bool. The default is shown explicitly rather than assumed.
+    a bool. `default` is shown explicitly rather than assumed, for
+    the same reason as ask_port_scope().
     """
 
     cli.subsection("Service/version detection")
 
     info = scan.SERVICE_DETECTION_INFO
-    print(f"{info.what} {info.why}")
-    print(f"Cost: {info.cost}")
-    print()
+    cli.info(f"{info.what} {info.why}")
+    cli.info(f"Cost: {info.cost}")
 
-    default = scan.ScanConfig().service_detection
     default_label = "Y" if default else "N"
 
     while True:
@@ -170,18 +174,25 @@ def ask_service_detection():
         cli.warning("Invalid choice. Please enter y or n.")
 
 
-def get_scan_config_from_user():
+def get_scan_config_from_user(current=None):
     """
     Ask the guided questions and return a scan.ScanConfig. This is a
     thin layer over ask_port_scope() / ask_service_detection() - it
     holds no command-building logic of its own.
+
+    `current` is the previous ScanConfig, if any (passed in when the
+    user declined a preview and chose to reconfigure). Its values are
+    used as the pre-selected default for each question, so declining
+    preserves the earlier answers instead of resetting them.
     """
 
     cli.section("Scan")
 
+    defaults = current if current is not None else scan.ScanConfig()
+
     return scan.ScanConfig(
-        port_scope=ask_port_scope(),
-        service_detection=ask_service_detection(),
+        port_scope=ask_port_scope(defaults.port_scope),
+        service_detection=ask_service_detection(defaults.service_detection),
     )
 
 
@@ -221,27 +232,41 @@ def get_confirmed_scan_config(target_info):
     """
     Run the guided question flow, show the preview, and ask for
     explicit consent. Declining returns to the questions so the user
-    can reconfigure; nothing is ever executed from here.
+    can reconfigure, preserving the previous answers as the new
+    defaults rather than resetting them. Exiting cancels the scan
+    configuration entirely. Nothing is ever executed from here either
+    way - this only ever returns a ScanConfig or None.
     """
 
+    scan_config = None
+
     while True:
-        scan_config = get_scan_config_from_user()
+        scan_config = get_scan_config_from_user(scan_config)
 
         display_scan_preview(target_info, scan_config)
 
         print()
         while True:
-            choice = input(
-                "Are you happy with this configuration? [Y/n] "
-            ).strip().lower()
+            cli.info("Is this scan configuration correct?")
+            cli.menu([
+                ("1", "Yes, continue"),
+                ("2", "Reconfigure"),
+                ("3", "Exit"),
+            ])
 
-            if choice in ("", "y", "yes"):
+            choice = input("> ").strip().lower()
+
+            if choice in ("1", "y", "yes"):
                 return scan_config
 
-            if choice in ("n", "no"):
+            if choice in ("2", "n", "no"):
                 break  # back to the outer loop to reconfigure
 
-            cli.warning("Please answer y or n.")
+            if choice in ("3", "q", "quit", "exit"):
+                cli.info("Exiting In the Dark.")
+                return None
+
+            cli.warning("Invalid choice. Please enter yes, no, or exit.")
 
         cli.info("Let's reconfigure the scan.")
 
@@ -314,6 +339,10 @@ def main():
     # Guided questions -> ScanConfig -> preview -> explicit consent.
     # Execution is a later increment - this deliberately stops here.
     scan_config = get_confirmed_scan_config(target_info)
+
+    # None means the user chose to exit instead of confirming a scan.
+    if scan_config is None:
+        return
 
     print()
     cli.success("Scan configuration approved.")

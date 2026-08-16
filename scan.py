@@ -93,7 +93,7 @@ PORT_SCOPE_INFO = {
              "ports.",
     ),
     PortScope.TOP_1000: CapabilityInfo(
-        name="Top 1000 (default)",
+        name="Top 1000",
         what="Scans Nmap's own default list of the 1000 most common "
              "TCP ports.",
         why="Nmap's normal balance of speed and coverage - a "

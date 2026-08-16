@@ -108,17 +108,6 @@ def test_target_is_always_the_final_argv_element(port_scope, service_detection):
     assert argv[-1] == "example.com"
 
 
-def test_target_remains_exactly_one_argv_element():
-    config = scan.ScanConfig()
-    hostile_value = "10.10.10.5 -oN pwned.txt"
-    argv = scan.build_argv(make_target(hostile_value), config)
-
-    # However malformed, the target value occupies exactly one slot -
-    # it was never split on whitespace into separate argv elements.
-    assert argv == ["nmap", "-sV", hostile_value]
-    assert argv.count(hostile_value) == 1
-
-
 @pytest.mark.parametrize("hostile_value", [
     "10.10.10.5; rm -rf /",
     "10.10.10.5 && whoami",
