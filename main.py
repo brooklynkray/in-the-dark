@@ -175,6 +175,40 @@ def ask_service_detection(default):
         cli.warning("Invalid choice. Please enter y or n.")
 
 
+def ask_os_detection(default):
+    """
+    Ask whether to enable OS detection (-O) and return a bool.
+    `default` is shown explicitly rather than assumed, for the same
+    reason as ask_service_detection(). This function has no idea
+    whether the current session can actually run OS detection -
+    that's shown separately, in the preview.
+    """
+
+    cli.subsection("OS detection")
+
+    info = scan.OS_DETECTION_INFO
+    cli.info(f"{info.what} {info.why}")
+    cli.info(f"Cost: {info.cost}")
+
+    default_label = "Y" if default else "N"
+
+    while True:
+        choice = input(
+            f"Enable OS detection? [{default_label}] "
+        ).strip().lower()
+
+        if not choice:
+            return default
+
+        if choice in ("y", "yes"):
+            return True
+
+        if choice in ("n", "no"):
+            return False
+
+        cli.warning("Invalid choice. Please enter y or n.")
+
+
 def ask_timing(default):
     """
     Ask which Nmap timing template to use and return the chosen
@@ -251,10 +285,10 @@ def get_scan_config_from_user(current=None):
     """
     Ask the guided questions and return a scan.ScanConfig. This is a
     thin layer over ask_technique() / ask_port_scope() /
-    ask_service_detection() / ask_timing() - it holds no
-    command-building logic of its own. Questions are asked in the
-    same order build_argv() emits their flags, so the guided flow
-    reads in the same order as the command it produces.
+    ask_service_detection() / ask_os_detection() / ask_timing() - it
+    holds no command-building logic of its own. Questions are asked
+    in the same order build_argv() emits their flags, so the guided
+    flow reads in the same order as the command it produces.
 
     `current` is the previous ScanConfig, if any (passed in when the
     user declined a preview and chose to reconfigure). Its values are
@@ -270,8 +304,31 @@ def get_scan_config_from_user(current=None):
         technique=ask_technique(defaults.technique),
         port_scope=ask_port_scope(defaults.port_scope),
         service_detection=ask_service_detection(defaults.service_detection),
+        os_detection=ask_os_detection(defaults.os_detection),
         timing=ask_timing(defaults.timing),
     )
+
+
+def _privilege_requiring_capabilities(scan_config):
+    """
+    Return the plain-English names of currently-selected capabilities
+    that need elevated privileges to actually run, as parallel noun
+    phrases (so they read naturally whether one or several are
+    joined together in a sentence). Used only to build a single,
+    consolidated preview warning - this is a small, explicit check of
+    the two known privileged capabilities, not a generic
+    "requires_privilege" metadata mechanism scanning over ScanConfig.
+    """
+
+    needed = []
+
+    if scan_config.technique == scan.Technique.SYN:
+        needed.append("SYN scanning")
+
+    if scan_config.os_detection:
+        needed.append("OS detection")
+
+    return needed
 
 
 def display_scan_preview(target_info, scan_config, elevated):
@@ -283,9 +340,10 @@ def display_scan_preview(target_info, scan_config, elevated):
 
     `elevated` is the current session's privilege state, from
     environment.py. It is used only to show an informational warning
-    when Technique.SYN is selected without privilege - it never
-    blocks a choice, never changes scan_config, and never changes the
-    argv that gets built or executed.
+    when a privileged capability (SYN, OS detection) is selected
+    without privilege - it never blocks a choice, never changes
+    scan_config, and never changes the argv that gets built or
+    executed.
     """
 
     cli.subsection("Scan configuration")
@@ -299,6 +357,9 @@ def display_scan_preview(target_info, scan_config, elevated):
     detection_label = "Enabled" if scan_config.service_detection else "Disabled"
     cli.list_items("Service/version detection", [detection_label])
 
+    os_detection_label = "Enabled" if scan_config.os_detection else "Disabled"
+    cli.list_items("OS detection", [os_detection_label])
+
     timing_info = scan.TIMING_INFO[scan_config.timing]
     cli.list_items("Timing", [timing_info.name])
 
@@ -306,19 +367,25 @@ def display_scan_preview(target_info, scan_config, elevated):
     purpose = f"{purpose} {port_info.why}"
     if scan_config.service_detection:
         purpose = f"{purpose} {scan.SERVICE_DETECTION_INFO.why}"
+    if scan_config.os_detection:
+        purpose = f"{purpose} {scan.OS_DETECTION_INFO.why}"
     purpose = f"{purpose} {timing_info.why}"
 
     print()
     print("Purpose:")
     print(f"  {purpose}")
 
-    if scan_config.technique == scan.Technique.SYN and not elevated:
-        print()
-        cli.warning(
-            "This session does not appear to have elevated privileges. "
-            "Nmap will likely refuse to run a SYN scan and exit with a "
-            "privilege error rather than completing it."
-        )
+    if not elevated:
+        needed = _privilege_requiring_capabilities(scan_config)
+        if needed:
+            print()
+            cli.warning(
+                "This session does not appear to have elevated "
+                f"privileges. This scan requires elevated privileges for "
+                f"{' and '.join(needed)}, so Nmap will likely refuse to run "
+                "it and exit with a privilege error rather than "
+                "completing it."
+            )
 
     argv = scan.build_argv(target_info, scan_config)
 
@@ -338,7 +405,7 @@ def get_confirmed_scan_config(target_info, elevated):
     way - this only ever returns a ScanConfig or None.
 
     `elevated` is passed straight through to display_scan_preview()
-    for the SYN-without-privilege warning - see that function's
+    for its privileged-capability warning - see that function's
     docstring for what it does and doesn't affect.
     """
 
@@ -412,7 +479,7 @@ def show_startup_sequence():
 
     Returns whether the current session appears to have elevated
     privileges, so main() can pass it on to the scan-preview step's
-    SYN-without-privilege warning. If detection failed outright, this
+    privileged-capability warning. If detection failed outright, this
     conservatively reports False rather than claiming a privilege
     level that was never actually confirmed.
     """

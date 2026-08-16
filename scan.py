@@ -43,6 +43,7 @@ FLAG_TIMING_T4 = "-T4"
 FLAG_TIMING_T5 = "-T5"
 FLAG_TECHNIQUE_CONNECT = "-sT"
 FLAG_TECHNIQUE_SYN = "-sS"
+FLAG_OS_DETECTION = "-O"
 
 
 class PortScope(Enum):
@@ -92,14 +93,19 @@ class ScanConfig:
     privilege, which this dataclass has no way to know and shouldn't -
     Connect is instead the only technique that works identically in
     every environment, which matters more for a learner's default
-    than mirroring Nmap's own conditional choice. Callers must still
-    show every chosen value, never assume it silently.
+    than mirroring Nmap's own conditional choice. OS detection
+    defaults to disabled for the same reason: it requires the same
+    elevated privileges as a SYN scan, so defaulting it on would
+    undermine the point of choosing an always-executable technique
+    default in the first place. Callers must still show every chosen
+    value, never assume it silently.
     """
 
     port_scope: PortScope = PortScope.TOP_1000
     service_detection: bool = True
     timing: Timing = Timing.T3
     technique: Technique = Technique.CONNECT
+    os_detection: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +167,21 @@ SERVICE_DETECTION_INFO = CapabilityInfo(
         "'something on port 22'.",
     flag=FLAG_SERVICE_DETECTION,
     cost="Adds time per open port, since it sends extra probes.",
+)
+
+OS_DETECTION_INFO = CapabilityInfo(
+    name="OS detection",
+    what="Analyses subtle differences in how the target responds to "
+         "probes to guess its operating system.",
+    why="Helps narrow down what the target is likely running, which "
+        "shapes what to investigate next.",
+    flag=FLAG_OS_DETECTION,
+    cost="Requires the same raw-packet privileges as a SYN scan "
+         "(root on Linux/macOS, Administrator on Windows) - without "
+         "them, Nmap refuses to run it and exits with a privilege "
+         "error. Even with privileges, results are a best guess and "
+         "are most reliable when the scan found at least one open "
+         "and one closed port to compare.",
 )
 
 TIMING_INFO = {
@@ -272,8 +293,9 @@ def build_argv(target_info, scan_config):
         2. scan technique
         3. port-scope option, if one exists
         4. service/version detection, if enabled
-        5. timing option, if one exists
-        6. target
+        5. OS detection, if enabled
+        6. timing option, if one exists
+        7. target
 
     Pure and deterministic: no subprocess, no printing, no shell
     involvement, no privilege awareness - this function has no idea
@@ -309,6 +331,9 @@ def build_argv(target_info, scan_config):
 
     if scan_config.service_detection:
         argv.append(FLAG_SERVICE_DETECTION)
+
+    if scan_config.os_detection:
+        argv.append(FLAG_OS_DETECTION)
 
     if scan_config.timing == Timing.T0:
         argv.append(FLAG_TIMING_T0)

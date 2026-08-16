@@ -28,6 +28,7 @@ def test_default_scan_config_is_top_1000_with_service_detection():
     assert config.service_detection is True
     assert config.timing == scan.Timing.T3
     assert config.technique == scan.Technique.CONNECT
+    assert config.os_detection is False
 
 
 def test_scan_config_is_frozen():
@@ -73,6 +74,30 @@ def test_service_detection_false_emits_no_dash_sV():
     config = scan.ScanConfig(port_scope=scan.PortScope.TOP_1000, service_detection=False)
     argv = scan.build_argv(make_target("10.10.10.5"), config)
     assert "-sV" not in argv
+
+
+# ---------------------------------------------------------------------------
+# OS detection
+# ---------------------------------------------------------------------------
+
+def test_os_detection_true_emits_dash_O():
+    config = scan.ScanConfig(os_detection=True)
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert "-O" in argv
+
+
+def test_os_detection_false_emits_no_dash_O():
+    config = scan.ScanConfig(os_detection=False)
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert "-O" not in argv
+
+
+def test_os_detection_flag_sits_after_service_detection_and_before_timing():
+    config = scan.ScanConfig(
+        service_detection=True, os_detection=True, timing=scan.Timing.T4
+    )
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert argv == ["nmap", "-sT", "-sV", "-O", "-T4", "10.10.10.5"]
 
 
 # ---------------------------------------------------------------------------
@@ -178,14 +203,16 @@ def test_port_scope_and_service_detection_combinations(
 @pytest.mark.parametrize("service_detection", [True, False])
 @pytest.mark.parametrize("timing", list(scan.Timing))
 @pytest.mark.parametrize("technique", list(scan.Technique))
+@pytest.mark.parametrize("os_detection", [True, False])
 def test_target_is_always_the_final_argv_element(
-    port_scope, service_detection, timing, technique
+    port_scope, service_detection, timing, technique, os_detection
 ):
     config = scan.ScanConfig(
         port_scope=port_scope,
         service_detection=service_detection,
         timing=timing,
         technique=technique,
+        os_detection=os_detection,
     )
     argv = scan.build_argv(make_target("example.com", "hostname"), config)
     assert argv[-1] == "example.com"
@@ -274,3 +301,17 @@ def test_advertised_technique_flag_matches_emitted_flag(technique):
     # and emit an explicit flag.
     assert advertised_flag
     assert advertised_flag in argv
+
+
+def test_advertised_os_detection_flag_matches_emitted_flag():
+    advertised_flag = scan.OS_DETECTION_INFO.flag
+
+    enabled_argv = scan.build_argv(
+        make_target("10.10.10.5"), scan.ScanConfig(os_detection=True)
+    )
+    disabled_argv = scan.build_argv(
+        make_target("10.10.10.5"), scan.ScanConfig(os_detection=False)
+    )
+
+    assert advertised_flag in enabled_argv
+    assert advertised_flag not in disabled_argv
