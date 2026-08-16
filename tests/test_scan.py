@@ -26,6 +26,7 @@ def test_default_scan_config_is_top_1000_with_service_detection():
     config = scan.ScanConfig()
     assert config.port_scope == scan.PortScope.TOP_1000
     assert config.service_detection is True
+    assert config.timing == scan.Timing.T3
 
 
 def test_scan_config_is_frozen():
@@ -74,6 +75,45 @@ def test_service_detection_false_emits_no_dash_sV():
 
 
 # ---------------------------------------------------------------------------
+# Timing
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("timing,flag", [
+    (scan.Timing.T0, "-T0"),
+    (scan.Timing.T1, "-T1"),
+    (scan.Timing.T2, "-T2"),
+    (scan.Timing.T4, "-T4"),
+    (scan.Timing.T5, "-T5"),
+])
+def test_non_default_timing_emits_its_flag(timing, flag):
+    config = scan.ScanConfig(timing=timing)
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert flag in argv
+
+
+def test_t3_emits_no_explicit_timing_flag():
+    config = scan.ScanConfig(timing=scan.Timing.T3)
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert not any(flag.startswith("-T") for flag in argv)
+
+
+@pytest.mark.parametrize("timing,expected", [
+    (scan.Timing.T0, ["nmap", "-p-", "-sV", "-T0", "10.10.10.5"]),
+    (scan.Timing.T3, ["nmap", "-p-", "-sV", "10.10.10.5"]),
+    (scan.Timing.T5, ["nmap", "-p-", "-sV", "-T5", "10.10.10.5"]),
+])
+def test_timing_flag_sits_after_service_detection_and_before_target(
+    timing, expected
+):
+    config = scan.ScanConfig(
+        port_scope=scan.PortScope.ALL_TCP,
+        service_detection=True,
+        timing=timing,
+    )
+    assert scan.build_argv(make_target("10.10.10.5"), config) == expected
+
+
+# ---------------------------------------------------------------------------
 # Combinations (requirement 6) and canonical ordering
 # ---------------------------------------------------------------------------
 
@@ -100,9 +140,12 @@ def test_port_scope_and_service_detection_combinations(
 
 @pytest.mark.parametrize("port_scope", list(scan.PortScope))
 @pytest.mark.parametrize("service_detection", [True, False])
-def test_target_is_always_the_final_argv_element(port_scope, service_detection):
+@pytest.mark.parametrize("timing", list(scan.Timing))
+def test_target_is_always_the_final_argv_element(
+    port_scope, service_detection, timing
+):
     config = scan.ScanConfig(
-        port_scope=port_scope, service_detection=service_detection
+        port_scope=port_scope, service_detection=service_detection, timing=timing
     )
     argv = scan.build_argv(make_target("example.com", "hostname"), config)
     assert argv[-1] == "example.com"
@@ -162,3 +205,18 @@ def test_advertised_service_detection_flag_matches_emitted_flag():
 
     assert advertised_flag in enabled_argv
     assert advertised_flag not in disabled_argv
+
+
+@pytest.mark.parametrize("timing", list(scan.Timing))
+def test_advertised_timing_flag_matches_emitted_flag(timing):
+    advertised_flag = scan.TIMING_INFO[timing].flag
+
+    argv = scan.build_argv(
+        make_target("10.10.10.5"), scan.ScanConfig(timing=timing)
+    )
+
+    if advertised_flag:
+        assert advertised_flag in argv
+    else:
+        # T3 advertises no flag, so no -T flag at all should be emitted.
+        assert not any(element.startswith("-T") for element in argv)

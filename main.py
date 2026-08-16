@@ -175,11 +175,46 @@ def ask_service_detection(default):
         cli.warning("Invalid choice. Please enter y or n.")
 
 
+def ask_timing(default):
+    """
+    Ask which Nmap timing template to use and return the chosen
+    scan.Timing. `default` is shown explicitly, for the same reason
+    as ask_port_scope().
+    """
+
+    cli.subsection("Timing")
+
+    options = list(scan.Timing)
+    default_index = options.index(default) + 1
+
+    for index, timing in enumerate(options, start=1):
+        info = scan.TIMING_INFO[timing]
+        marker = " (default)" if timing == default else ""
+        cli.menu([(str(index), f"{info.name}{marker}")])
+        cli.info(f"{info.what} {info.why}")
+        cli.info(f"Cost: {info.cost}")
+
+    print()
+
+    while True:
+        choice = input(f"> [{default_index}] ").strip()
+
+        if not choice:
+            return default
+
+        if choice in [str(i) for i in range(1, len(options) + 1)]:
+            return options[int(choice) - 1]
+
+        cli.warning(
+            f"Invalid choice. Please enter a number from 1 to {len(options)}."
+        )
+
+
 def get_scan_config_from_user(current=None):
     """
     Ask the guided questions and return a scan.ScanConfig. This is a
-    thin layer over ask_port_scope() / ask_service_detection() - it
-    holds no command-building logic of its own.
+    thin layer over ask_port_scope() / ask_service_detection() /
+    ask_timing() - it holds no command-building logic of its own.
 
     `current` is the previous ScanConfig, if any (passed in when the
     user declined a preview and chose to reconfigure). Its values are
@@ -194,6 +229,7 @@ def get_scan_config_from_user(current=None):
     return scan.ScanConfig(
         port_scope=ask_port_scope(defaults.port_scope),
         service_detection=ask_service_detection(defaults.service_detection),
+        timing=ask_timing(defaults.timing),
     )
 
 
@@ -213,9 +249,13 @@ def display_scan_preview(target_info, scan_config):
     detection_label = "Enabled" if scan_config.service_detection else "Disabled"
     cli.list_items("Service/version detection", [detection_label])
 
+    timing_info = scan.TIMING_INFO[scan_config.timing]
+    cli.list_items("Timing", [timing_info.name])
+
     purpose = port_info.why
     if scan_config.service_detection:
         purpose = f"{purpose} {scan.SERVICE_DETECTION_INFO.why}"
+    purpose = f"{purpose} {timing_info.why}"
 
     print()
     print("Purpose:")

@@ -36,6 +36,11 @@ from enum import Enum
 FLAG_COMMON_PORTS = "-F"
 FLAG_ALL_TCP_PORTS = "-p-"
 FLAG_SERVICE_DETECTION = "-sV"
+FLAG_TIMING_T0 = "-T0"
+FLAG_TIMING_T1 = "-T1"
+FLAG_TIMING_T2 = "-T2"
+FLAG_TIMING_T4 = "-T4"
+FLAG_TIMING_T5 = "-T5"
 
 
 class PortScope(Enum):
@@ -46,6 +51,17 @@ class PortScope(Enum):
     ALL_TCP = "all_tcp"
 
 
+class Timing(Enum):
+    """Nmap's -T0 (slowest/stealthiest) through -T5 (fastest) timing templates."""
+
+    T0 = "t0"
+    T1 = "t1"
+    T2 = "t2"
+    T3 = "t3"
+    T4 = "t4"
+    T5 = "t5"
+
+
 @dataclass(frozen=True)
 class ScanConfig:
     """
@@ -54,14 +70,15 @@ class ScanConfig:
     profiles, and (later) expert/manual mode all converge on before
     build_argv() turns it into a command.
 
-    The defaults here match Nmap's own sensible default (top 1000
-    TCP ports) plus service detection, since that is the most useful
-    starting point for a learner - but callers must still show the
-    chosen values, never assume them silently.
+    The defaults here match Nmap's own sensible defaults (top 1000
+    TCP ports, normal timing) plus service detection, since that is
+    the most useful starting point for a learner - but callers must
+    still show the chosen values, never assume them silently.
     """
 
     port_scope: PortScope = PortScope.TOP_1000
     service_detection: bool = True
+    timing: Timing = Timing.T3
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +142,76 @@ SERVICE_DETECTION_INFO = CapabilityInfo(
     cost="Adds time per open port, since it sends extra probes.",
 )
 
+TIMING_INFO = {
+    Timing.T0: CapabilityInfo(
+        name="T0 - Paranoid",
+        what="The slowest timing template, spacing probes minutes "
+             "apart.",
+        why="Used to minimise the chance of triggering an IDS - "
+            "rarely appropriate outside dedicated evasion practice.",
+        flag=FLAG_TIMING_T0,
+        cost="Extremely slow; a full scan can take hours. Combined "
+             "with a large scan, this will likely exceed In the "
+             "Dark's current 300-second execution timeout, so the "
+             "scan may be stopped before it finishes.",
+    ),
+    Timing.T1: CapabilityInfo(
+        name="T1 - Sneaky",
+        what="A very slow timing template intended to reduce "
+             "detection likelihood.",
+        why="Similar goal to Paranoid but with slightly less "
+            "spacing between probes.",
+        flag=FLAG_TIMING_T1,
+        cost="Very slow. Combined with a large scan, this will "
+             "likely exceed In the Dark's current 300-second "
+             "execution timeout, so the scan may be stopped before "
+             "it finishes.",
+    ),
+    Timing.T2: CapabilityInfo(
+        name="T2 - Polite",
+        what="Slows down to use less bandwidth and target resources "
+             "than the default.",
+        why="Useful on fragile networks or when you want to reduce "
+            "load on the target.",
+        flag=FLAG_TIMING_T2,
+        cost="Noticeably slower than the default; large scans may "
+             "take a while longer to complete.",
+    ),
+    Timing.T3: CapabilityInfo(
+        name="T3 - Normal",
+        what="Nmap's own default timing - no artificial delay added "
+             "between probes.",
+        why="A reasonable balance of speed and reliability for most "
+            "reconnaissance, and the least surprising choice since "
+            "it matches Nmap's own default behaviour.",
+        # Nmap uses this timing when no -T flag is given, so this
+        # option intentionally has no flag of its own.
+        flag="",
+        cost="No particular trade-off - this is Nmap's baseline "
+             "speed.",
+    ),
+    Timing.T4: CapabilityInfo(
+        name="T4 - Aggressive",
+        what="Speeds scanning up, assuming a reasonably fast and "
+             "reliable network.",
+        why="Common on labs/CTFs and other low-latency environments "
+            "where speed matters more than subtlety.",
+        flag=FLAG_TIMING_T4,
+        cost="More likely to overwhelm a slow or heavily rate-"
+             "limited target than the default.",
+    ),
+    Timing.T5: CapabilityInfo(
+        name="T5 - Insane",
+        what="The fastest timing template, sacrificing accuracy for "
+             "speed.",
+        why="Only appropriate on very fast, reliable networks where "
+            "a short scan time matters more than complete results.",
+        flag=FLAG_TIMING_T5,
+        cost="Most likely of all templates to produce inaccurate or "
+             "incomplete results on anything but an ideal network.",
+    ),
+}
+
 
 # ---------------------------------------------------------------------------
 # Command construction
@@ -138,15 +225,16 @@ def build_argv(target_info, scan_config):
         1. nmap
         2. port-scope option, if one exists
         3. service/version detection, if enabled
-        4. target
+        4. timing option, if one exists
+        5. target
 
     Pure and deterministic: no subprocess, no printing, no shell
     involvement. The target is always appended as exactly one
     element at the end - never concatenated with flags, never split,
-    never passed through a shell. Later capabilities (timing, scan
-    technique, custom ports, NSE, ...) get inserted as further
-    explicit steps in this same sequence, at defined positions -
-    this function is not meant to become a loop over metadata.
+    never passed through a shell. Later capabilities (scan technique,
+    custom ports, NSE, ...) get inserted as further explicit steps in
+    this same sequence, at defined positions - this function is not
+    meant to become a loop over metadata.
     """
 
     argv = ["nmap"]
@@ -159,6 +247,18 @@ def build_argv(target_info, scan_config):
 
     if scan_config.service_detection:
         argv.append(FLAG_SERVICE_DETECTION)
+
+    if scan_config.timing == Timing.T0:
+        argv.append(FLAG_TIMING_T0)
+    elif scan_config.timing == Timing.T1:
+        argv.append(FLAG_TIMING_T1)
+    elif scan_config.timing == Timing.T2:
+        argv.append(FLAG_TIMING_T2)
+    elif scan_config.timing == Timing.T4:
+        argv.append(FLAG_TIMING_T4)
+    elif scan_config.timing == Timing.T5:
+        argv.append(FLAG_TIMING_T5)
+    # T3 is Nmap's own default timing template, so it adds no flag.
 
     argv.append(target_info.value)
 
