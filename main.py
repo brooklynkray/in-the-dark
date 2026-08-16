@@ -2,6 +2,7 @@
 
 import cli
 import environment
+import executor
 import scan
 import target
 
@@ -271,6 +272,32 @@ def get_confirmed_scan_config(target_info):
         cli.info("Let's reconfigure the scan.")
 
 
+def display_execution_result(result):
+    """
+    Show what happened when the approved command was run: whether it
+    started, how it finished, and any captured output.
+    """
+
+    cli.subsection("Execution result")
+
+    if result.executable_not_found:
+        cli.error("Nmap could not be started - the executable was not found.")
+        return
+
+    if result.timed_out:
+        cli.error("Nmap did not finish within the timeout and was stopped.")
+    elif result.return_code == 0:
+        cli.success(f"Nmap finished successfully (exit code {result.return_code}).")
+    else:
+        cli.warning(f"Nmap exited with a non-zero code ({result.return_code}).")
+
+    if result.stdout:
+        cli.list_items("stdout", result.stdout.splitlines())
+
+    if result.stderr:
+        cli.list_items("stderr", result.stderr.splitlines())
+
+
 def show_startup_sequence():
     """
     Print the banner and report on the checks in environment.py.
@@ -337,7 +364,6 @@ def main():
     cli.success(f"Target confirmed: {target_info.value}")
 
     # Guided questions -> ScanConfig -> preview -> explicit consent.
-    # Execution is a later increment - this deliberately stops here.
     scan_config = get_confirmed_scan_config(target_info)
 
     # None means the user chose to exit instead of confirming a scan.
@@ -346,10 +372,17 @@ def main():
 
     print()
     cli.success("Scan configuration approved.")
-    cli.info(
-        "Execution is deliberately not implemented in this increment. "
-        "In the Dark stops here."
-    )
+
+    # The exact argv scan.build_argv() produced for the approved
+    # configuration - built once, here, and handed to the executor
+    # unchanged. It is never rebuilt from the preview string, and the
+    # executor never sees anything but this list.
+    argv = scan.build_argv(target_info, scan_config)
+
+    cli.info("Running Nmap. This may take a while...")
+    result = executor.run(argv)
+
+    display_execution_result(result)
 
 
 # Handle Ctrl+C gracefully instead of displaying a Python traceback.

@@ -17,8 +17,8 @@ concrete Nmap invocation. It owns:
   does, so presentation code never invents its own description of
   what a flag means.
 
-Nothing in this module calls subprocess. Execution is a later
-increment - this one stops at "here is the command that would run".
+Nothing in this module calls subprocess - execution lives in
+executor.py, which receives only the argv list this module builds.
 """
 
 from dataclasses import dataclass
