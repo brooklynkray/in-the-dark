@@ -44,6 +44,7 @@ FLAG_TIMING_T5 = "-T5"
 FLAG_TECHNIQUE_CONNECT = "-sT"
 FLAG_TECHNIQUE_SYN = "-sS"
 FLAG_OS_DETECTION = "-O"
+FLAG_CUSTOM_PORTS = "-p"
 
 
 class PortScope(Enum):
@@ -52,6 +53,7 @@ class PortScope(Enum):
     COMMON = "common"
     TOP_1000 = "top_1000"
     ALL_TCP = "all_tcp"
+    CUSTOM = "custom"
 
 
 class Timing(Enum):
@@ -99,6 +101,14 @@ class ScanConfig:
     undermine the point of choosing an always-executable technique
     default in the first place. Callers must still show every chosen
     value, never assume it silently.
+
+    `custom_ports` is the one field that is not fully independent of
+    the others: it must be None unless `port_scope` is CUSTOM, and
+    must be a value already validated by ports.parse_custom_ports()
+    whenever `port_scope` is CUSTOM. That invariant is enforced by
+    construction discipline in the guided-question layer - the same
+    way TargetInfo's validity is enforced - not by a validate()
+    method here.
     """
 
     port_scope: PortScope = PortScope.TOP_1000
@@ -106,6 +116,7 @@ class ScanConfig:
     timing: Timing = Timing.T3
     technique: Technique = Technique.CONNECT
     os_detection: bool = False
+    custom_ports: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +166,19 @@ PORT_SCOPE_INFO = {
             "missed, e.g. before a thorough assessment.",
         flag=FLAG_ALL_TCP_PORTS,
         cost="Significantly slower than Common or Top 1000.",
+    ),
+    PortScope.CUSTOM: CapabilityInfo(
+        name="Custom ports",
+        what="Scans exactly the ports you specify - single ports, "
+             "comma-separated lists, or hyphenated ranges (e.g. "
+             "80,443 or 1-1024).",
+        why="Full control when you already know which ports matter, "
+            "or want something outside the Common/Top 1000 lists "
+            "without scanning everything.",
+        flag=FLAG_CUSTOM_PORTS,
+        cost="Only as thorough as the ports you list - easy to "
+             "accidentally miss something a broader scope would "
+             "have caught.",
     ),
 }
 
@@ -310,8 +334,10 @@ def build_argv(target_info, scan_config):
 
     The target is always appended as exactly one element at the end -
     never concatenated with flags, never split, never passed through
-    a shell. Later capabilities (custom ports, NSE, ...) get inserted
-    as further explicit steps in this same sequence, at defined
+    a shell. Custom ports are appended as two elements, ["-p", value],
+    for the same reason: the flag and its value must never be fused
+    into one token. Later capabilities (NSE, ...) get inserted as
+    further explicit steps in this same sequence, at defined
     positions - this function is not meant to become a loop over
     metadata.
     """
@@ -327,6 +353,21 @@ def build_argv(target_info, scan_config):
         argv.append(FLAG_COMMON_PORTS)
     elif scan_config.port_scope == PortScope.ALL_TCP:
         argv.append(FLAG_ALL_TCP_PORTS)
+    elif scan_config.port_scope == PortScope.CUSTOM:
+        if scan_config.custom_ports is None:
+            # Unreachable via the guided flow - ask_custom_ports() is
+            # only skipped when port_scope isn't CUSTOM, and always
+            # returns a validated string when it is. Getting here
+            # means ScanConfig's one cross-field invariant was
+            # violated, which is a programming error, not a case for
+            # user-facing validation - fail loudly rather than
+            # silently building a different scan than was approved.
+            raise ValueError(
+                "ScanConfig.port_scope is CUSTOM but custom_ports is "
+                "None - this is an internal invariant violation."
+            )
+        argv.append(FLAG_CUSTOM_PORTS)
+        argv.append(scan_config.custom_ports)
     # TOP_1000 is Nmap's own default port scope, so it adds no flag.
 
     if scan_config.service_detection:

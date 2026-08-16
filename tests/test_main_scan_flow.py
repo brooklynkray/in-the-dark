@@ -74,6 +74,33 @@ def test_ask_port_scope_rejects_invalid_input_then_accepts(monkeypatch):
     assert main.ask_port_scope(scan.PortScope.TOP_1000) == scan.PortScope.COMMON
 
 
+def test_ask_custom_ports_accepts_valid_input(monkeypatch):
+    queued_input(monkeypatch, ["80,443"])
+    assert main.ask_custom_ports(None) == "80,443"
+
+
+def test_ask_custom_ports_rejects_invalid_input_then_accepts(monkeypatch):
+    queued_input(monkeypatch, ["not-ports", "80,443"])
+    assert main.ask_custom_ports(None) == "80,443"
+
+
+def test_ask_custom_ports_requires_non_blank_input_when_no_default(monkeypatch):
+    # Blank input is treated as an empty (invalid) specification and
+    # re-prompted, since there is no previous value to fall back to.
+    queued_input(monkeypatch, ["", "80,443"])
+    assert main.ask_custom_ports(None) == "80,443"
+
+
+def test_ask_custom_ports_preserves_previous_value_on_blank_input(monkeypatch):
+    queued_input(monkeypatch, [""])
+    assert main.ask_custom_ports("80,443") == "80,443"
+
+
+def test_ask_custom_ports_selects_new_value_over_previous_default(monkeypatch):
+    queued_input(monkeypatch, ["1-1024"])
+    assert main.ask_custom_ports("80,443") == "1-1024"
+
+
 def test_ask_service_detection_accepts_default_on_blank_input(monkeypatch):
     queued_input(monkeypatch, [""])
     assert main.ask_service_detection(True) is True
@@ -144,6 +171,26 @@ def test_get_scan_config_from_user_uses_previous_config_as_default(monkeypatch):
     assert main.get_scan_config_from_user(previous) == previous
 
 
+def test_get_scan_config_from_user_with_custom_port_scope(monkeypatch):
+    # Technique blank, port scope "4" (CUSTOM) triggers the follow-up
+    # question, then service detection/OS detection/timing blank.
+    queued_input(monkeypatch, ["", "4", "80,443", "", "", ""])
+    config = main.get_scan_config_from_user()
+    assert config.port_scope == scan.PortScope.CUSTOM
+    assert config.custom_ports == "80,443"
+
+
+def test_get_scan_config_from_user_leaves_custom_ports_none_for_other_scopes(
+    monkeypatch,
+):
+    # Port scope "3" (ALL_TCP) never triggers the custom-ports
+    # question, so no extra input is queued for it.
+    queued_input(monkeypatch, ["", "3", "", "", ""])
+    config = main.get_scan_config_from_user()
+    assert config.port_scope == scan.PortScope.ALL_TCP
+    assert config.custom_ports is None
+
+
 # ---------------------------------------------------------------------------
 # get_confirmed_scan_config() - the full guided/preview/consent loop.
 # `elevated` doesn't affect the returned ScanConfig, only what the
@@ -209,6 +256,52 @@ def test_declining_and_deliberately_changing_one_answer(monkeypatch):
         os_detection=False,
         timing=scan.Timing.T3,
     )
+
+
+def test_selecting_custom_ports_and_accepting(monkeypatch):
+    # Port scope: "4" (CUSTOM). Custom ports: "1-1024,3389". Everything
+    # else blank/default. Consent: "1".
+    queued_input(monkeypatch, ["", "4", "1-1024,3389", "", "", "", "1"])
+    config = main.get_confirmed_scan_config(TARGET, elevated=True)
+    assert config == scan.ScanConfig(
+        port_scope=scan.PortScope.CUSTOM,
+        custom_ports="1-1024,3389",
+    )
+
+
+def test_declining_and_reconfiguring_preserves_custom_ports(monkeypatch):
+    # Pass 1: CUSTOM with "80,443", then decline ("2"). Pass 2: accept
+    # every default, including the preserved custom ports value via
+    # blank input (port scope defaults back to CUSTOM too, which
+    # re-triggers the custom-ports question). Consent: "1".
+    queued_input(
+        monkeypatch,
+        [
+            "", "4", "80,443", "", "", "", "2",   # pass 1 (7 answers)
+            "", "", "", "", "", "", "1",           # pass 2 (7 answers)
+        ],
+    )
+    config = main.get_confirmed_scan_config(TARGET, elevated=True)
+    assert config == scan.ScanConfig(
+        port_scope=scan.PortScope.CUSTOM,
+        custom_ports="80,443",
+    )
+
+
+def test_declining_and_switching_away_from_custom_resets_custom_ports(monkeypatch):
+    # Pass 1: CUSTOM with "80,443", then decline ("2"). Pass 2: switch
+    # to TOP_1000 ("2") instead - custom_ports must revert to None,
+    # not linger from pass 1's answer. Consent: "1".
+    queued_input(
+        monkeypatch,
+        [
+            "", "4", "80,443", "", "", "", "2",  # pass 1 (7 answers)
+            "", "2", "", "", "", "1",             # pass 2 (6 answers)
+        ],
+    )
+    config = main.get_confirmed_scan_config(TARGET, elevated=True)
+    assert config.port_scope == scan.PortScope.TOP_1000
+    assert config.custom_ports is None
 
 
 def test_invalid_consent_input_is_rejected_then_reprompted(monkeypatch):

@@ -29,6 +29,7 @@ def test_default_scan_config_is_top_1000_with_service_detection():
     assert config.timing == scan.Timing.T3
     assert config.technique == scan.Technique.CONNECT
     assert config.os_detection is False
+    assert config.custom_ports is None
 
 
 def test_scan_config_is_frozen():
@@ -58,6 +59,83 @@ def test_all_tcp_emits_dash_p_dash():
     config = scan.ScanConfig(port_scope=scan.PortScope.ALL_TCP, service_detection=False)
     argv = scan.build_argv(make_target("10.10.10.5"), config)
     assert "-p-" in argv
+
+
+# ---------------------------------------------------------------------------
+# Custom ports
+# ---------------------------------------------------------------------------
+
+def test_custom_ports_emits_dash_p_with_value():
+    config = scan.ScanConfig(
+        port_scope=scan.PortScope.CUSTOM, custom_ports="80,443"
+    )
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert "-p" in argv
+    assert "80,443" in argv
+
+
+def test_custom_ports_flag_and_value_sit_in_port_scope_position():
+    config = scan.ScanConfig(
+        port_scope=scan.PortScope.CUSTOM,
+        custom_ports="80,443",
+        service_detection=True,
+        timing=scan.Timing.T4,
+    )
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert argv == ["nmap", "-sT", "-p", "80,443", "-sV", "-T4", "10.10.10.5"]
+
+
+def test_custom_ports_value_is_its_own_element_not_fused_with_flag():
+    config = scan.ScanConfig(
+        port_scope=scan.PortScope.CUSTOM, custom_ports="80,443"
+    )
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+
+    # "-p" and the value are two distinct elements - never "-p80,443".
+    assert argv.count("-p") == 1
+    assert "-p80,443" not in argv
+    assert argv[argv.index("-p") + 1] == "80,443"
+
+
+@pytest.mark.parametrize("hostile_value", [
+    "80;rm -rf /",
+    "80 && whoami",
+    "80 -oN pwned.txt",
+    "$(whoami)",
+    "`whoami`",
+    "--script=malicious",
+])
+def test_hostile_custom_ports_value_is_never_split_or_concatenated(hostile_value):
+    # Defense in depth: build_argv() must keep custom_ports as one
+    # argv element even if something upstream failed to validate it -
+    # independent of ports.parse_custom_ports()'s own protections.
+    config = scan.ScanConfig(
+        port_scope=scan.PortScope.CUSTOM, custom_ports=hostile_value
+    )
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+
+    assert argv.count(hostile_value) == 1
+    for element in argv:
+        if element != hostile_value:
+            assert hostile_value not in element
+
+
+def test_custom_port_scope_with_none_raises_value_error():
+    # CUSTOM + custom_ports=None should be unreachable via the guided
+    # flow - this is an internal invariant violation, not something
+    # build_argv() should silently paper over.
+    config = scan.ScanConfig(port_scope=scan.PortScope.CUSTOM, custom_ports=None)
+    with pytest.raises(ValueError):
+        scan.build_argv(make_target("10.10.10.5"), config)
+
+
+def test_advertised_custom_ports_flag_matches_emitted_flag():
+    advertised_flag = scan.PORT_SCOPE_INFO[scan.PortScope.CUSTOM].flag
+    config = scan.ScanConfig(
+        port_scope=scan.PortScope.CUSTOM, custom_ports="80,443"
+    )
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert advertised_flag in argv
 
 
 # ---------------------------------------------------------------------------
@@ -207,8 +285,14 @@ def test_port_scope_and_service_detection_combinations(
 def test_target_is_always_the_final_argv_element(
     port_scope, service_detection, timing, technique, os_detection
 ):
+    # CUSTOM needs a companion value to be a valid ScanConfig at all -
+    # None is the unreachable invariant-violation case tested
+    # separately in test_custom_port_scope_with_none_raises_value_error.
+    custom_ports = "80,443" if port_scope == scan.PortScope.CUSTOM else None
+
     config = scan.ScanConfig(
         port_scope=port_scope,
+        custom_ports=custom_ports,
         service_detection=service_detection,
         timing=timing,
         technique=technique,
@@ -245,7 +329,14 @@ def test_hostile_target_value_is_never_split_or_concatenated(hostile_value):
 # Metadata / build_argv agreement (requirement 10)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("port_scope", list(scan.PortScope))
+# CUSTOM is excluded here and covered by its own dedicated
+# test_advertised_custom_ports_flag_matches_emitted_flag below - it
+# needs a companion custom_ports value to be a valid ScanConfig at
+# all, unlike the other three (parameter-free) port scopes.
+@pytest.mark.parametrize(
+    "port_scope",
+    [scope for scope in scan.PortScope if scope != scan.PortScope.CUSTOM],
+)
 def test_advertised_port_scope_flag_matches_emitted_flag(port_scope):
     advertised_flag = scan.PORT_SCOPE_INFO[port_scope].flag
 

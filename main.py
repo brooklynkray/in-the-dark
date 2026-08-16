@@ -3,6 +3,7 @@
 import cli
 import environment
 import executor
+import ports
 import scan
 import target
 
@@ -140,6 +141,48 @@ def ask_port_scope(default):
 
         cli.warning(
             f"Invalid choice. Please enter a number from 1 to {len(options)}."
+        )
+
+
+def ask_custom_ports(default):
+    """
+    Ask for a custom port specification and return the validated,
+    normalized string. Only called when the user has chosen
+    scan.PortScope.CUSTOM - this function has no idea what port scope
+    means, it only asks for and validates one string via
+    ports.parse_custom_ports().
+
+    `default` is the previous custom_ports value, if any (from an
+    earlier pass through this same CUSTOM choice, on reconfigure).
+    When present, blank input re-accepts it; when absent (the first
+    time CUSTOM is chosen), there is no sensible default to fall back
+    to, so a non-blank, valid answer is required.
+    """
+
+    cli.subsection("Custom ports")
+
+    cli.info(
+        "Enter the ports to scan: single ports, comma-separated "
+        "lists, or hyphenated ranges (e.g. 80,443 or 1-1024)."
+    )
+
+    while True:
+        if default is not None:
+            raw = input(f"Ports [{default}]: ").strip()
+            if not raw:
+                return default
+        else:
+            raw = input("Ports: ").strip()
+
+        parsed = ports.parse_custom_ports(raw)
+
+        if parsed is not None:
+            return parsed
+
+        cli.error("Invalid port specification.")
+        cli.info(
+            "Use single ports, comma-separated lists, or hyphenated "
+            "ranges within 1-65535, e.g. 80,443 or 1-1024,3389."
         )
 
 
@@ -285,24 +328,40 @@ def get_scan_config_from_user(current=None):
     """
     Ask the guided questions and return a scan.ScanConfig. This is a
     thin layer over ask_technique() / ask_port_scope() /
-    ask_service_detection() / ask_os_detection() / ask_timing() - it
-    holds no command-building logic of its own. Questions are asked
-    in the same order build_argv() emits their flags, so the guided
-    flow reads in the same order as the command it produces.
+    ask_custom_ports() / ask_service_detection() / ask_os_detection()
+    / ask_timing() - it holds no command-building logic of its own.
+    Questions are asked in the same order build_argv() emits their
+    flags, so the guided flow reads in the same order as the command
+    it produces.
+
+    ask_custom_ports() is only called when the chosen port scope is
+    CUSTOM - it's the one conditionally-asked question in this flow,
+    since custom_ports must stay None for every other port scope
+    (see ScanConfig's docstring for that invariant).
 
     `current` is the previous ScanConfig, if any (passed in when the
     user declined a preview and chose to reconfigure). Its values are
     used as the pre-selected default for each question, so declining
-    preserves the earlier answers instead of resetting them.
+    preserves the earlier answers instead of resetting them. Moving
+    away from CUSTOM on reconfigure means custom_ports reverts to
+    None - choosing CUSTOM again afterwards starts fresh.
     """
 
     cli.section("Scan")
 
     defaults = current if current is not None else scan.ScanConfig()
 
+    technique = ask_technique(defaults.technique)
+    port_scope = ask_port_scope(defaults.port_scope)
+
+    custom_ports = None
+    if port_scope == scan.PortScope.CUSTOM:
+        custom_ports = ask_custom_ports(defaults.custom_ports)
+
     return scan.ScanConfig(
-        technique=ask_technique(defaults.technique),
-        port_scope=ask_port_scope(defaults.port_scope),
+        technique=technique,
+        port_scope=port_scope,
+        custom_ports=custom_ports,
         service_detection=ask_service_detection(defaults.service_detection),
         os_detection=ask_os_detection(defaults.os_detection),
         timing=ask_timing(defaults.timing),
@@ -352,7 +411,11 @@ def display_scan_preview(target_info, scan_config, elevated):
     cli.list_items("Technique", [technique_info.name])
 
     port_info = scan.PORT_SCOPE_INFO[scan_config.port_scope]
-    cli.list_items("Port scope", [port_info.name])
+    if scan_config.port_scope == scan.PortScope.CUSTOM:
+        port_scope_label = f"{port_info.name} ({scan_config.custom_ports})"
+    else:
+        port_scope_label = port_info.name
+    cli.list_items("Port scope", [port_scope_label])
 
     detection_label = "Enabled" if scan_config.service_detection else "Disabled"
     cli.list_items("Service/version detection", [detection_label])
