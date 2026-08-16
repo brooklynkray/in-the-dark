@@ -2,6 +2,7 @@
 
 import cli
 import environment
+import scan
 import target
 
 
@@ -101,6 +102,150 @@ def get_target_from_user():
             cli.warning("Invalid choice. Please enter yes, no, or exit.")
 
 
+def ask_port_scope():
+    """
+    Ask which ports to scan and return the chosen scan.PortScope.
+
+    This function only asks a question and reads input - it does not
+    know what flag any option maps to, that is scan.build_argv()'s
+    job. The default is shown explicitly rather than assumed.
+    """
+
+    cli.subsection("Port scope")
+
+    options = [scan.PortScope.COMMON, scan.PortScope.TOP_1000, scan.PortScope.ALL_TCP]
+    default = scan.ScanConfig().port_scope
+    default_index = options.index(default) + 1
+
+    for index, port_scope in enumerate(options, start=1):
+        info = scan.PORT_SCOPE_INFO[port_scope]
+        marker = " (default)" if port_scope == default else ""
+        print(f"[{index}] {info.name}{marker}")
+        print(f"    {info.what} {info.why}")
+
+    print()
+
+    while True:
+        choice = input(f"> [{default_index}] ").strip()
+
+        if not choice:
+            return default
+
+        if choice in ("1", "2", "3"):
+            return options[int(choice) - 1]
+
+        cli.warning("Invalid choice. Please enter 1, 2, or 3.")
+
+
+def ask_service_detection():
+    """
+    Ask whether to enable service/version detection (-sV) and return
+    a bool. The default is shown explicitly rather than assumed.
+    """
+
+    cli.subsection("Service/version detection")
+
+    info = scan.SERVICE_DETECTION_INFO
+    print(f"{info.what} {info.why}")
+    print(f"Cost: {info.cost}")
+    print()
+
+    default = scan.ScanConfig().service_detection
+    default_label = "Y" if default else "N"
+
+    while True:
+        choice = input(
+            f"Enable service/version detection? [{default_label}] "
+        ).strip().lower()
+
+        if not choice:
+            return default
+
+        if choice in ("y", "yes"):
+            return True
+
+        if choice in ("n", "no"):
+            return False
+
+        cli.warning("Invalid choice. Please enter y or n.")
+
+
+def get_scan_config_from_user():
+    """
+    Ask the guided questions and return a scan.ScanConfig. This is a
+    thin layer over ask_port_scope() / ask_service_detection() - it
+    holds no command-building logic of its own.
+    """
+
+    cli.section("Scan")
+
+    return scan.ScanConfig(
+        port_scope=ask_port_scope(),
+        service_detection=ask_service_detection(),
+    )
+
+
+def display_scan_preview(target_info, scan_config):
+    """
+    Show the chosen scan configuration, its purpose, and the exact
+    command that would run. The command is derived from
+    scan.build_argv() - there is no separate, hand-written preview
+    string to drift out of sync with it.
+    """
+
+    cli.subsection("Scan configuration")
+
+    port_info = scan.PORT_SCOPE_INFO[scan_config.port_scope]
+    cli.list_items("Port scope", [port_info.name])
+
+    detection_label = "Enabled" if scan_config.service_detection else "Disabled"
+    cli.list_items("Service/version detection", [detection_label])
+
+    purpose = port_info.why
+    if scan_config.service_detection:
+        purpose = f"{purpose} {scan.SERVICE_DETECTION_INFO.why}"
+
+    print()
+    print("Purpose:")
+    print(f"  {purpose}")
+
+    argv = scan.build_argv(target_info, scan_config)
+
+    print()
+    print("Command:")
+    print()
+    print(f"  {' '.join(argv)}")
+
+
+def get_confirmed_scan_config(target_info):
+    """
+    Run the guided question flow, show the preview, and ask for
+    explicit consent. Declining returns to the questions so the user
+    can reconfigure; nothing is ever executed from here.
+    """
+
+    while True:
+        scan_config = get_scan_config_from_user()
+
+        display_scan_preview(target_info, scan_config)
+
+        print()
+        while True:
+            choice = input(
+                "Are you happy with this configuration? [Y/n] "
+            ).strip().lower()
+
+            if choice in ("", "y", "yes"):
+                return scan_config
+
+            if choice in ("n", "no"):
+                break  # back to the outer loop to reconfigure
+
+            cli.warning("Please answer y or n.")
+
+        cli.info("Let's reconfigure the scan.")
+
+
 def show_startup_sequence():
     """
     Print the banner and report on the checks in environment.py.
@@ -165,6 +310,17 @@ def main():
 
     print()
     cli.success(f"Target confirmed: {target_info.value}")
+
+    # Guided questions -> ScanConfig -> preview -> explicit consent.
+    # Execution is a later increment - this deliberately stops here.
+    scan_config = get_confirmed_scan_config(target_info)
+
+    print()
+    cli.success("Scan configuration approved.")
+    cli.info(
+        "Execution is deliberately not implemented in this increment. "
+        "In the Dark stops here."
+    )
 
 
 # Handle Ctrl+C gracefully instead of displaying a Python traceback.

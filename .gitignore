@@ -1,6 +1,7 @@
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 results/*.json
 results/*.txt
 results/*.md
