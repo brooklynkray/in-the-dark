@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 
+import dataclasses
+import os
+import tempfile
+
 import cli
 import environment
 import executor
 import ports
+import results
 import scan
 import target
 
@@ -457,8 +462,16 @@ def display_scan_preview(target_info, scan_config, elevated):
     print()
     print(f"  {' '.join(argv)}")
 
+    if scan_config.xml_output_path is not None:
+        print()
+        cli.info(
+            "The -oX flag above captures structured results for this "
+            "session's display and is cleaned up automatically "
+            "afterwards - it is not a scan setting you chose."
+        )
 
-def get_confirmed_scan_config(target_info, elevated):
+
+def get_confirmed_scan_config(target_info, elevated, xml_output_path=None):
     """
     Run the guided question flow, show the preview, and ask for
     explicit consent. Declining returns to the questions so the user
@@ -470,12 +483,24 @@ def get_confirmed_scan_config(target_info, elevated):
     `elevated` is passed straight through to display_scan_preview()
     for its privileged-capability warning - see that function's
     docstring for what it does and doesn't affect.
+
+    `xml_output_path`, if given, is stamped onto every ScanConfig
+    shown and returned by this function. It is not one of the guided
+    questions - get_scan_config_from_user() has no idea it exists -
+    it is injected here, after the user's actual answers are built,
+    because it is tool-managed output plumbing rather than a scan
+    choice (see ScanConfig's docstring).
     """
 
     scan_config = None
 
     while True:
         scan_config = get_scan_config_from_user(scan_config)
+
+        if xml_output_path is not None:
+            scan_config = dataclasses.replace(
+                scan_config, xml_output_path=xml_output_path
+            )
 
         display_scan_preview(target_info, scan_config, elevated)
 
@@ -529,6 +554,121 @@ def display_execution_result(result):
 
     if result.stderr:
         cli.list_items("stderr", result.stderr.splitlines())
+
+
+def display_scan_results(scan_result):
+    """
+    Show a structured summary of what the scan found. Only ever
+    called when parsing the captured XML succeeded - a parsing
+    failure means this is simply never called, and
+    display_execution_result()'s raw output remains the only view.
+    This augments that raw view; it never replaces it.
+    """
+
+    cli.subsection("Scan results")
+
+    cli.field("Host status", scan_result.host.status)
+
+    if not scan_result.host.ports:
+        cli.info("No ports reported.")
+        return
+
+    lines = []
+    for port in scan_result.host.ports:
+        line = f"{port.port}/{port.protocol} {port.state}"
+        if port.service:
+            line += f" {port.service}"
+        if port.product:
+            line += f" ({port.product}"
+            if port.version:
+                line += f" {port.version}"
+            line += ")"
+        lines.append(line)
+
+    cli.list_items("Ports", lines)
+
+
+def _read_and_parse_xml_output(xml_output_path):
+    """
+    Read the captured -oX file and parse it. Returns None - never
+    raises - if there is no path, the file can't be read (e.g. Nmap
+    never ran), or the XML didn't parse. A missing or empty file is
+    an expected, unremarkable case (e.g. the executable wasn't
+    found), not an error to surface.
+    """
+
+    if xml_output_path is None:
+        return None
+
+    try:
+        with open(xml_output_path, "r", encoding="utf-8") as xml_file:
+            xml_text = xml_file.read()
+    except OSError:
+        return None
+
+    return results.parse_nmap_xml(xml_text)
+
+
+def run_and_display_scan(target_info, scan_config):
+    """
+    Execute the approved scan configuration and display the outcome:
+    raw output (always, via display_execution_result()) plus a
+    structured summary (only when the captured XML parses
+    successfully). The exact argv scan.build_argv() produces for
+    scan_config - including -oX if present - is built once, here, and
+    handed to the executor unchanged; it is never rebuilt from the
+    preview string.
+
+    scan_config.xml_output_path, if set, must already point at a
+    real (possibly still-empty) file - this function does not create
+    or clean it up. That is main()'s responsibility, since the same
+    path is reused across the whole preview/consent cycle and must
+    outlive any single call here.
+    """
+
+    argv = scan.build_argv(target_info, scan_config)
+
+    cli.info("Running Nmap. This may take a while...")
+    result = executor.run(argv)
+
+    display_execution_result(result)
+
+    scan_result = _read_and_parse_xml_output(scan_config.xml_output_path)
+    if scan_result is not None:
+        display_scan_results(scan_result)
+
+
+def _create_xml_output_path():
+    """
+    Reserve a secure, unique temporary file path for Nmap's -oX
+    output. Uses tempfile.mkstemp() so the path can't be predicted or
+    raced by another process, rather than a hand-built name in a
+    shared temp directory. The file descriptor is closed immediately
+    after creation - this process never writes to it itself, Nmap
+    will open the path and write to it, and holding our own handle
+    open in the meantime is unnecessary and, on Windows in
+    particular, can interact awkwardly with another process trying
+    to write to the same file.
+    """
+
+    file_descriptor, path = tempfile.mkstemp(
+        suffix=".xml", prefix="in-the-dark-"
+    )
+    os.close(file_descriptor)
+    return path
+
+
+def _cleanup_xml_output_path(path):
+    """
+    Best-effort removal of the temporary XML file. Never raises - a
+    cleanup failure must not crash a scan that already completed;
+    worst case is a harmless leftover file in the OS temp directory.
+    """
+
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def show_startup_sequence():
@@ -604,26 +744,27 @@ def main():
     print()
     cli.success(f"Target confirmed: {target_info.value}")
 
-    # Guided questions -> ScanConfig -> preview -> explicit consent.
-    scan_config = get_confirmed_scan_config(target_info, elevated)
+    # Reserved once, before any questions are asked, so the same path
+    # appears in every preview and is the exact path actually used at
+    # execution - never a different, unseen path swapped in later.
+    xml_output_path = _create_xml_output_path()
 
-    # None means the user chose to exit instead of confirming a scan.
-    if scan_config is None:
-        return
+    try:
+        # Guided questions -> ScanConfig -> preview -> explicit consent.
+        scan_config = get_confirmed_scan_config(
+            target_info, elevated, xml_output_path
+        )
 
-    print()
-    cli.success("Scan configuration approved.")
+        # None means the user chose to exit instead of confirming a scan.
+        if scan_config is None:
+            return
 
-    # The exact argv scan.build_argv() produced for the approved
-    # configuration - built once, here, and handed to the executor
-    # unchanged. It is never rebuilt from the preview string, and the
-    # executor never sees anything but this list.
-    argv = scan.build_argv(target_info, scan_config)
+        print()
+        cli.success("Scan configuration approved.")
 
-    cli.info("Running Nmap. This may take a while...")
-    result = executor.run(argv)
-
-    display_execution_result(result)
+        run_and_display_scan(target_info, scan_config)
+    finally:
+        _cleanup_xml_output_path(xml_output_path)
 
 
 # Handle Ctrl+C gracefully instead of displaying a Python traceback.

@@ -45,6 +45,7 @@ FLAG_TECHNIQUE_CONNECT = "-sT"
 FLAG_TECHNIQUE_SYN = "-sS"
 FLAG_OS_DETECTION = "-O"
 FLAG_CUSTOM_PORTS = "-p"
+FLAG_XML_OUTPUT = "-oX"
 
 
 class PortScope(Enum):
@@ -109,6 +110,14 @@ class ScanConfig:
     construction discipline in the guided-question layer - the same
     way TargetInfo's validity is enforced - not by a validate()
     method here.
+
+    `xml_output_path` is different in kind from every other field
+    here: it is not a scan choice, has no guided question, and no
+    teaching metadata - it is tool-managed output plumbing (where
+    Nmap should write structured results for this run to display),
+    set only by main.py's execution orchestration. Unlike
+    custom_ports it has no coupling with any other field - it is
+    always independently valid, set or not.
     """
 
     port_scope: PortScope = PortScope.TOP_1000
@@ -117,6 +126,7 @@ class ScanConfig:
     technique: Technique = Technique.CONNECT
     os_detection: bool = False
     custom_ports: str | None = None
+    xml_output_path: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +329,9 @@ def build_argv(target_info, scan_config):
         4. service/version detection, if enabled
         5. OS detection, if enabled
         6. timing option, if one exists
-        7. target
+        7. XML output path, if one exists (tool-managed plumbing,
+           not a scan choice - see ScanConfig's docstring)
+        8. target
 
     Pure and deterministic: no subprocess, no printing, no shell
     involvement, no privilege awareness - this function has no idea
@@ -387,6 +399,10 @@ def build_argv(target_info, scan_config):
     elif scan_config.timing == Timing.T5:
         argv.append(FLAG_TIMING_T5)
     # T3 is Nmap's own default timing template, so it adds no flag.
+
+    if scan_config.xml_output_path is not None:
+        argv.append(FLAG_XML_OUTPUT)
+        argv.append(scan_config.xml_output_path)
 
     argv.append(target_info.value)
 

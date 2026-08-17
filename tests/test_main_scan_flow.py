@@ -2,15 +2,21 @@
 Tests for the interactive scan configuration / consent flow in
 main.py: ask_technique(), ask_port_scope(), ask_service_detection(),
 ask_os_detection(), ask_timing(), get_scan_config_from_user(), and
-get_confirmed_scan_config().
+get_confirmed_scan_config() - plus the XML-output temp-file lifecycle
+and result-display orchestration (_create_xml_output_path(),
+_cleanup_xml_output_path(), run_and_display_scan()).
 
 input() is monkeypatched to a fixed queue of responses so these run
 without a real terminal or human. None of these tests touch Nmap or a
 subprocess - they only exercise the guided-question/consent control
-flow and assert on the resulting ScanConfig (or None), or on the
-preview's printed output for the privilege-warning tests.
+flow and assert on the resulting ScanConfig (or None), on the
+preview's printed output for the privilege-warning tests, or on
+run_and_display_scan()'s output with executor.run() mocked out.
 """
 
+import os
+
+import executor
 import main
 import scan
 import target
@@ -419,3 +425,192 @@ def test_combined_privilege_warning_does_not_change_the_built_argv(capsys):
         == argv_privileged
         == ["nmap", "-sS", "-O", "10.10.10.5"]
     )
+
+
+# ---------------------------------------------------------------------------
+# get_confirmed_scan_config() - threading xml_output_path through
+# ---------------------------------------------------------------------------
+
+def test_get_confirmed_scan_config_stamps_xml_output_path_onto_result(
+    monkeypatch,
+):
+    queued_input(monkeypatch, ["", "", "", "", "", "1"])
+    config = main.get_confirmed_scan_config(
+        TARGET, elevated=True, xml_output_path="/tmp/scan.xml"
+    )
+    assert config.xml_output_path == "/tmp/scan.xml"
+
+
+def test_get_confirmed_scan_config_without_xml_output_path_leaves_it_none(
+    monkeypatch,
+):
+    # Existing calls that don't pass xml_output_path (the default)
+    # must keep working exactly as before this increment.
+    queued_input(monkeypatch, ["", "", "", "", "", "1"])
+    config = main.get_confirmed_scan_config(TARGET, elevated=True)
+    assert config.xml_output_path is None
+
+
+# ---------------------------------------------------------------------------
+# display_scan_preview() - the -oX annotation
+# ---------------------------------------------------------------------------
+
+def test_preview_annotates_xml_output_path_as_tool_managed(capsys):
+    scan_config = scan.ScanConfig(xml_output_path="/tmp/scan.xml")
+    main.display_scan_preview(TARGET, scan_config, elevated=True)
+    output = capsys.readouterr().out
+    assert "/tmp/scan.xml" in output
+    assert "not a scan setting you chose" in output
+
+
+def test_preview_has_no_annotation_when_xml_output_path_is_none(capsys):
+    scan_config = scan.ScanConfig(xml_output_path=None)
+    main.display_scan_preview(TARGET, scan_config, elevated=True)
+    output = capsys.readouterr().out
+    assert "not a scan setting you chose" not in output
+
+
+# ---------------------------------------------------------------------------
+# Temp-file lifecycle: _create_xml_output_path() / _cleanup_xml_output_path()
+# ---------------------------------------------------------------------------
+
+def test_create_xml_output_path_creates_a_real_empty_file():
+    path = main._create_xml_output_path()
+    try:
+        assert os.path.exists(path)
+        assert path.endswith(".xml")
+        assert os.path.getsize(path) == 0
+    finally:
+        main._cleanup_xml_output_path(path)
+
+
+def test_create_xml_output_path_returns_a_unique_path_each_time():
+    path_one = main._create_xml_output_path()
+    path_two = main._create_xml_output_path()
+    try:
+        assert path_one != path_two
+    finally:
+        main._cleanup_xml_output_path(path_one)
+        main._cleanup_xml_output_path(path_two)
+
+
+def test_cleanup_xml_output_path_removes_the_file():
+    path = main._create_xml_output_path()
+    assert os.path.exists(path)
+    main._cleanup_xml_output_path(path)
+    assert not os.path.exists(path)
+
+
+def test_cleanup_xml_output_path_does_not_raise_if_already_removed():
+    path = main._create_xml_output_path()
+    os.remove(path)
+    main._cleanup_xml_output_path(path)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# run_and_display_scan() - orchestration, with executor.run() mocked out.
+# This is the first place in the project that mocks executor.run() itself
+# rather than letting it run for real (test_executor.py already covers
+# executor.py's own behaviour against real, harmless local processes).
+# ---------------------------------------------------------------------------
+
+def _fake_execution_result(stdout="", stderr=""):
+    return executor.ExecutionResult(
+        return_code=0,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=False,
+        executable_not_found=False,
+    )
+
+
+NORMAL_SCAN_XML = (
+    '<?xml version="1.0"?><nmaprun><host><status state="up"/>'
+    '<ports><port protocol="tcp" portid="22"><state state="open"/>'
+    '<service name="ssh" product="OpenSSH" version="8.2"/>'
+    "</port></ports></host></nmaprun>"
+)
+
+
+def test_run_and_display_scan_shows_both_raw_and_structured_output(
+    monkeypatch, capsys, tmp_path
+):
+    xml_path = tmp_path / "scan.xml"
+    xml_path.write_text(NORMAL_SCAN_XML, encoding="utf-8")
+
+    monkeypatch.setattr(
+        main.executor, "run",
+        lambda argv: _fake_execution_result(stdout="Nmap scan report..."),
+    )
+
+    scan_config = scan.ScanConfig(xml_output_path=str(xml_path))
+    main.run_and_display_scan(TARGET, scan_config)
+
+    output = capsys.readouterr().out
+    assert "Nmap scan report..." in output       # raw output still shown
+    assert "Scan results" in output               # structured summary added
+    assert "22/tcp open ssh (OpenSSH 8.2)" in output
+
+
+def test_run_and_display_scan_skips_structured_display_when_xml_missing(
+    monkeypatch, capsys, tmp_path
+):
+    xml_path = tmp_path / "never-created.xml"  # Nmap "never ran"
+
+    monkeypatch.setattr(
+        main.executor, "run",
+        lambda argv: _fake_execution_result(stdout="raw output only"),
+    )
+
+    scan_config = scan.ScanConfig(xml_output_path=str(xml_path))
+    main.run_and_display_scan(TARGET, scan_config)
+
+    output = capsys.readouterr().out
+    assert "raw output only" in output
+    assert "Scan results" not in output
+
+
+def test_run_and_display_scan_skips_structured_display_when_xml_empty(
+    monkeypatch, capsys, tmp_path
+):
+    # The realistic "executable not found" case: _create_xml_output_path()
+    # creates an empty file, but Nmap never runs, so it stays empty.
+    xml_path = tmp_path / "empty.xml"
+    xml_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        main.executor, "run",
+        lambda argv: executor.ExecutionResult(
+            return_code=None, stdout="", stderr="",
+            timed_out=False, executable_not_found=True,
+        ),
+    )
+
+    scan_config = scan.ScanConfig(xml_output_path=str(xml_path))
+    main.run_and_display_scan(TARGET, scan_config)
+
+    output = capsys.readouterr().out
+    assert "could not be started" in output
+    assert "Scan results" not in output
+
+
+def test_run_and_display_scan_uses_the_same_argv_that_was_previewed(
+    monkeypatch, tmp_path
+):
+    # The exact argv passed to executor.run() must be scan.build_argv()'s
+    # output for scan_config - never rebuilt, never a different list.
+    captured = {}
+
+    def fake_run(argv):
+        captured["argv"] = argv
+        return _fake_execution_result()
+
+    monkeypatch.setattr(main.executor, "run", fake_run)
+
+    xml_path = tmp_path / "scan.xml"
+    scan_config = scan.ScanConfig(
+        technique=scan.Technique.SYN, xml_output_path=str(xml_path)
+    )
+    main.run_and_display_scan(TARGET, scan_config)
+
+    assert captured["argv"] == scan.build_argv(TARGET, scan_config)

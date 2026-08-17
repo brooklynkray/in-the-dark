@@ -30,6 +30,7 @@ def test_default_scan_config_is_top_1000_with_service_detection():
     assert config.technique == scan.Technique.CONNECT
     assert config.os_detection is False
     assert config.custom_ports is None
+    assert config.xml_output_path is None
 
 
 def test_scan_config_is_frozen():
@@ -253,6 +254,70 @@ def test_technique_flag_sits_immediately_after_nmap():
 
 
 # ---------------------------------------------------------------------------
+# XML output path - tool-managed plumbing, not a guided-question field.
+# There is no metadata-agreement test here because there is no teaching
+# metadata for this field - see ScanConfig's docstring for why.
+# ---------------------------------------------------------------------------
+
+def test_xml_output_path_none_emits_no_dash_oX():
+    config = scan.ScanConfig()
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert "-oX" not in argv
+
+
+def test_xml_output_path_set_emits_dash_oX_with_value():
+    config = scan.ScanConfig(xml_output_path="/tmp/scan.xml")
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert "-oX" in argv
+    assert "/tmp/scan.xml" in argv
+
+
+def test_xml_output_path_flag_and_value_sit_immediately_before_target():
+    config = scan.ScanConfig(
+        port_scope=scan.PortScope.ALL_TCP,
+        service_detection=True,
+        timing=scan.Timing.T4,
+        xml_output_path="/tmp/scan.xml",
+    )
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert argv == [
+        "nmap", "-sT", "-p-", "-sV", "-T4", "-oX", "/tmp/scan.xml",
+        "10.10.10.5",
+    ]
+
+
+def test_xml_output_path_value_is_its_own_element_not_fused_with_flag():
+    config = scan.ScanConfig(xml_output_path="/tmp/scan.xml")
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+
+    assert argv.count("-oX") == 1
+    assert "-oX/tmp/scan.xml" not in argv
+    assert argv[argv.index("-oX") + 1] == "/tmp/scan.xml"
+
+
+@pytest.mark.parametrize("hostile_value", [
+    "/tmp/x;rm -rf /",
+    "/tmp/x && whoami",
+    "$(whoami)",
+    "`whoami`",
+    "/tmp/x -- --script=malicious",
+])
+def test_hostile_xml_output_path_is_never_split_or_concatenated(hostile_value):
+    # Defense in depth, same as custom_ports: even though this value
+    # is always a real tempfile.mkstemp() path in practice, never a
+    # user-entered string, build_argv() must not rely on that being
+    # true - it must keep whatever string is here as one argv element
+    # regardless of where it came from.
+    config = scan.ScanConfig(xml_output_path=hostile_value)
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+
+    assert argv.count(hostile_value) == 1
+    for element in argv:
+        if element != hostile_value:
+            assert hostile_value not in element
+
+
+# ---------------------------------------------------------------------------
 # Combinations (requirement 6) and canonical ordering
 # ---------------------------------------------------------------------------
 
@@ -282,8 +347,10 @@ def test_port_scope_and_service_detection_combinations(
 @pytest.mark.parametrize("timing", list(scan.Timing))
 @pytest.mark.parametrize("technique", list(scan.Technique))
 @pytest.mark.parametrize("os_detection", [True, False])
+@pytest.mark.parametrize("xml_output_path", [None, "/tmp/scan.xml"])
 def test_target_is_always_the_final_argv_element(
-    port_scope, service_detection, timing, technique, os_detection
+    port_scope, service_detection, timing, technique, os_detection,
+    xml_output_path,
 ):
     # CUSTOM needs a companion value to be a valid ScanConfig at all -
     # None is the unreachable invariant-violation case tested
@@ -297,6 +364,7 @@ def test_target_is_always_the_final_argv_element(
         timing=timing,
         technique=technique,
         os_detection=os_detection,
+        xml_output_path=xml_output_path,
     )
     argv = scan.build_argv(make_target("example.com", "hostname"), config)
     assert argv[-1] == "example.com"
