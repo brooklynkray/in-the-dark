@@ -1,0 +1,48 @@
+# Runs the unit test suite on every push and pull request.
+#
+# Security decisions, so they're easy to explain:
+# - permissions: contents: read -> the job's GITHUB_TOKEN can read the
+#   repo and nothing else (no pushing, no editing PRs). Least privilege.
+# - Third-party actions are pinned to a full commit SHA, not a tag.
+#   Tags can be moved to point at different code; a commit SHA can't.
+#   The version comment next to each SHA is for humans.
+# - No secrets are used, and the tests never run Nmap or touch the
+#   network, so nothing here can scan anything.
+
+name: tests
+
+on:
+  push:
+    branches: ["main", "feature/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      # "python -m pytest" (not bare "pytest") puts the repo root on
+      # sys.path, which is how the tests import main, scan, results...
+      - name: Run tests
+        run: python -m pytest -v
