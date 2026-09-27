@@ -152,14 +152,30 @@ def test_ask_timing_rejects_invalid_input_then_accepts(monkeypatch):
     assert main.ask_timing(scan.Timing.T3) == scan.Timing.T5
 
 
+def test_ask_skip_host_discovery_accepts_default_on_blank_input(monkeypatch):
+    queued_input(monkeypatch, [""])
+    assert main.ask_skip_host_discovery(False) is False
+
+
+def test_ask_skip_host_discovery_selects_non_default_option(monkeypatch):
+    queued_input(monkeypatch, ["y"])
+    assert main.ask_skip_host_discovery(False) is True
+
+
+def test_ask_skip_host_discovery_rejects_invalid_input_then_accepts(monkeypatch):
+    queued_input(monkeypatch, ["maybe", "-Pn", "n"])
+    assert main.ask_skip_host_discovery(True) is False
+
+
 # ---------------------------------------------------------------------------
-# get_scan_config_from_user() - composing all five questions, with/without
+# get_scan_config_from_user() - composing all six questions, with/without
 # a previous ScanConfig supplying the defaults. Questions are asked in
-# technique, port scope, service detection, OS detection, timing order.
+# technique, host discovery, port scope, service detection, OS detection,
+# timing order.
 # ---------------------------------------------------------------------------
 
 def test_get_scan_config_from_user_defaults_to_scanconfig_defaults(monkeypatch):
-    queued_input(monkeypatch, ["", "", "", "", ""])
+    queued_input(monkeypatch, ["", "", "", "", "", ""])
     assert main.get_scan_config_from_user() == scan.ScanConfig()
 
 
@@ -170,17 +186,19 @@ def test_get_scan_config_from_user_uses_previous_config_as_default(monkeypatch):
         service_detection=False,
         os_detection=True,
         timing=scan.Timing.T1,
+        skip_host_discovery=True,
     )
-    # Blank input on all five questions should preserve the previous
+    # Blank input on all six questions should preserve the previous
     # answers, not fall back to scan.ScanConfig()'s built-in defaults.
-    queued_input(monkeypatch, ["", "", "", "", ""])
+    queued_input(monkeypatch, ["", "", "", "", "", ""])
     assert main.get_scan_config_from_user(previous) == previous
 
 
 def test_get_scan_config_from_user_with_custom_port_scope(monkeypatch):
-    # Technique blank, port scope "4" (CUSTOM) triggers the follow-up
-    # question, then service detection/OS detection/timing blank.
-    queued_input(monkeypatch, ["", "4", "80,443", "", "", ""])
+    # Technique and host discovery blank, port scope "4" (CUSTOM)
+    # triggers the follow-up question, then service detection/OS
+    # detection/timing blank.
+    queued_input(monkeypatch, ["", "", "4", "80,443", "", "", ""])
     config = main.get_scan_config_from_user()
     assert config.port_scope == scan.PortScope.CUSTOM
     assert config.custom_ports == "80,443"
@@ -191,7 +209,7 @@ def test_get_scan_config_from_user_leaves_custom_ports_none_for_other_scopes(
 ):
     # Port scope "3" (ALL_TCP) never triggers the custom-ports
     # question, so no extra input is queued for it.
-    queued_input(monkeypatch, ["", "3", "", "", ""])
+    queued_input(monkeypatch, ["", "", "3", "", "", ""])
     config = main.get_scan_config_from_user()
     assert config.port_scope == scan.PortScope.ALL_TCP
     assert config.custom_ports is None
@@ -205,20 +223,21 @@ def test_get_scan_config_from_user_leaves_custom_ports_none_for_other_scopes(
 # ---------------------------------------------------------------------------
 
 def test_accepting_default_configuration(monkeypatch):
-    # Technique, port scope, service detection, OS detection, timing:
-    # all blank (default). Consent: "1" (yes).
-    queued_input(monkeypatch, ["", "", "", "", "", "1"])
+    # Technique, host discovery, port scope, service detection, OS
+    # detection, timing: all blank (default). Consent: "1" (yes).
+    queued_input(monkeypatch, ["", "", "", "", "", "", "1"])
     assert main.get_confirmed_scan_config(TARGET, elevated=True) == scan.ScanConfig()
 
 
 def test_selecting_non_default_options_and_accepting(monkeypatch):
-    # Technique: "2" (SYN). Port scope: "3" (ALL_TCP). Service
-    # detection: "n" (disabled). OS detection: "y" (enabled). Timing:
-    # "6" (T5). Consent: "y".
-    queued_input(monkeypatch, ["2", "3", "n", "y", "6", "y"])
+    # Technique: "2" (SYN). Skip host discovery: "y". Port scope: "3"
+    # (ALL_TCP). Service detection: "n" (disabled). OS detection: "y"
+    # (enabled). Timing: "6" (T5). Consent: "y".
+    queued_input(monkeypatch, ["2", "y", "3", "n", "y", "6", "y"])
     config = main.get_confirmed_scan_config(TARGET, elevated=True)
     assert config == scan.ScanConfig(
         technique=scan.Technique.SYN,
+        skip_host_discovery=True,
         port_scope=scan.PortScope.ALL_TCP,
         service_detection=False,
         os_detection=True,
@@ -227,17 +246,19 @@ def test_selecting_non_default_options_and_accepting(monkeypatch):
 
 
 def test_declining_and_reconfiguring_preserves_previous_selection(monkeypatch):
-    # Pass 1: SYN, ALL_TCP, service detection off, OS detection on,
-    # timing T1, then decline ("2"). Pass 2: accept all five defaults,
-    # which must now be the previous answers rather than
-    # CONNECT/TOP_1000/enabled/disabled/T3. Consent: "1".
+    # Pass 1: SYN, skip host discovery, ALL_TCP, service detection
+    # off, OS detection on, timing T1, then decline ("2"). Pass 2:
+    # accept all six defaults, which must now be the previous answers
+    # rather than CONNECT/no -Pn/TOP_1000/enabled/disabled/T3.
+    # Consent: "1".
     queued_input(
         monkeypatch,
-        ["2", "3", "n", "y", "2", "2", "", "", "", "", "", "1"],
+        ["2", "y", "3", "n", "y", "2", "2", "", "", "", "", "", "", "1"],
     )
     config = main.get_confirmed_scan_config(TARGET, elevated=True)
     assert config == scan.ScanConfig(
         technique=scan.Technique.SYN,
+        skip_host_discovery=True,
         port_scope=scan.PortScope.ALL_TCP,
         service_detection=False,
         os_detection=True,
@@ -252,7 +273,7 @@ def test_declining_and_deliberately_changing_one_answer(monkeypatch):
     # deliberately turn service detection off this time. Consent: "1".
     queued_input(
         monkeypatch,
-        ["", "3", "", "", "", "2", "", "", "n", "", "", "1"],
+        ["", "", "3", "", "", "", "2", "", "", "", "n", "", "", "1"],
     )
     config = main.get_confirmed_scan_config(TARGET, elevated=True)
     assert config == scan.ScanConfig(
@@ -267,7 +288,7 @@ def test_declining_and_deliberately_changing_one_answer(monkeypatch):
 def test_selecting_custom_ports_and_accepting(monkeypatch):
     # Port scope: "4" (CUSTOM). Custom ports: "1-1024,3389". Everything
     # else blank/default. Consent: "1".
-    queued_input(monkeypatch, ["", "4", "1-1024,3389", "", "", "", "1"])
+    queued_input(monkeypatch, ["", "", "4", "1-1024,3389", "", "", "", "1"])
     config = main.get_confirmed_scan_config(TARGET, elevated=True)
     assert config == scan.ScanConfig(
         port_scope=scan.PortScope.CUSTOM,
@@ -283,8 +304,8 @@ def test_declining_and_reconfiguring_preserves_custom_ports(monkeypatch):
     queued_input(
         monkeypatch,
         [
-            "", "4", "80,443", "", "", "", "2",   # pass 1 (7 answers)
-            "", "", "", "", "", "", "1",           # pass 2 (7 answers)
+            "", "", "4", "80,443", "", "", "", "2",   # pass 1 (8 answers)
+            "", "", "", "", "", "", "", "1",           # pass 2 (8 answers)
         ],
     )
     config = main.get_confirmed_scan_config(TARGET, elevated=True)
@@ -301,8 +322,8 @@ def test_declining_and_switching_away_from_custom_resets_custom_ports(monkeypatc
     queued_input(
         monkeypatch,
         [
-            "", "4", "80,443", "", "", "", "2",  # pass 1 (7 answers)
-            "", "2", "", "", "", "1",             # pass 2 (6 answers)
+            "", "", "4", "80,443", "", "", "", "2",  # pass 1 (8 answers)
+            "", "", "2", "", "", "", "1",             # pass 2 (7 answers)
         ],
     )
     config = main.get_confirmed_scan_config(TARGET, elevated=True)
@@ -311,12 +332,12 @@ def test_declining_and_switching_away_from_custom_resets_custom_ports(monkeypatc
 
 
 def test_invalid_consent_input_is_rejected_then_reprompted(monkeypatch):
-    queued_input(monkeypatch, ["", "", "", "", "", "banana", "1"])
+    queued_input(monkeypatch, ["", "", "", "", "", "", "banana", "1"])
     assert main.get_confirmed_scan_config(TARGET, elevated=True) == scan.ScanConfig()
 
 
 def test_exiting_at_consent_returns_none(monkeypatch):
-    queued_input(monkeypatch, ["", "", "", "", "", "3"])
+    queued_input(monkeypatch, ["", "", "", "", "", "", "3"])
     assert main.get_confirmed_scan_config(TARGET, elevated=True) is None
 
 
@@ -434,7 +455,7 @@ def test_combined_privilege_warning_does_not_change_the_built_argv(capsys):
 def test_get_confirmed_scan_config_stamps_xml_output_path_onto_result(
     monkeypatch,
 ):
-    queued_input(monkeypatch, ["", "", "", "", "", "1"])
+    queued_input(monkeypatch, ["", "", "", "", "", "", "1"])
     config = main.get_confirmed_scan_config(
         TARGET, elevated=True, xml_output_path="/tmp/scan.xml"
     )
@@ -446,7 +467,7 @@ def test_get_confirmed_scan_config_without_xml_output_path_leaves_it_none(
 ):
     # Existing calls that don't pass xml_output_path (the default)
     # must keep working exactly as before this increment.
-    queued_input(monkeypatch, ["", "", "", "", "", "1"])
+    queued_input(monkeypatch, ["", "", "", "", "", "", "1"])
     config = main.get_confirmed_scan_config(TARGET, elevated=True)
     assert config.xml_output_path is None
 
@@ -468,6 +489,42 @@ def test_preview_has_no_annotation_when_xml_output_path_is_none(capsys):
     main.display_scan_preview(TARGET, scan_config, elevated=True)
     output = capsys.readouterr().out
     assert "not a scan setting you chose" not in output
+
+
+# ---------------------------------------------------------------------------
+# display_scan_preview() - host discovery and the automatic -6 annotation
+# ---------------------------------------------------------------------------
+
+IPV6_TARGET = target.TargetInfo(value="2001:db8::10", type="IPv6")
+
+
+def test_preview_shows_host_discovery_enabled_by_default(capsys):
+    main.display_scan_preview(TARGET, scan.ScanConfig(), elevated=True)
+    output = capsys.readouterr().out
+    assert "Host discovery:" in output
+    assert "Enabled" in output
+    assert "-Pn" not in output
+
+
+def test_preview_shows_host_discovery_skipped_and_explains_why(capsys):
+    scan_config = scan.ScanConfig(skip_host_discovery=True)
+    main.display_scan_preview(TARGET, scan_config, elevated=True)
+    output = capsys.readouterr().out
+    assert "Skipped (-Pn)" in output
+    assert scan.HOST_DISCOVERY_INFO.why in output
+
+
+def test_preview_annotates_automatic_ipv6_flag(capsys):
+    main.display_scan_preview(IPV6_TARGET, scan.ScanConfig(), elevated=True)
+    output = capsys.readouterr().out
+    assert "nmap -sT -sV -6 2001:db8::10" in output
+    assert "-6 flag above was added automatically" in output
+
+
+def test_preview_has_no_ipv6_annotation_for_ipv4_target(capsys):
+    main.display_scan_preview(TARGET, scan.ScanConfig(), elevated=True)
+    output = capsys.readouterr().out
+    assert "-6 flag" not in output
 
 
 # ---------------------------------------------------------------------------

@@ -257,6 +257,38 @@ def ask_os_detection(default):
         cli.warning("Invalid choice. Please enter y or n.")
 
 
+def ask_skip_host_discovery(default):
+    """
+    Ask whether to skip host discovery (-Pn) and return a bool.
+    `default` is shown explicitly rather than assumed, for the same
+    reason as ask_service_detection().
+    """
+
+    cli.subsection("Host discovery")
+
+    info = scan.HOST_DISCOVERY_INFO
+    cli.info(f"{info.what} {info.why}")
+    cli.info(f"Cost: {info.cost}")
+
+    default_label = "Y" if default else "N"
+
+    while True:
+        choice = input(
+            f"Skip host discovery (-Pn)? [{default_label}] "
+        ).strip().lower()
+
+        if not choice:
+            return default
+
+        if choice in ("y", "yes"):
+            return True
+
+        if choice in ("n", "no"):
+            return False
+
+        cli.warning("Invalid choice. Please enter y or n.")
+
+
 def ask_timing(default):
     """
     Ask which Nmap timing template to use and return the chosen
@@ -332,9 +364,10 @@ def ask_technique(default):
 def get_scan_config_from_user(current=None):
     """
     Ask the guided questions and return a scan.ScanConfig. This is a
-    thin layer over ask_technique() / ask_port_scope() /
-    ask_custom_ports() / ask_service_detection() / ask_os_detection()
-    / ask_timing() - it holds no command-building logic of its own.
+    thin layer over ask_technique() / ask_skip_host_discovery() /
+    ask_port_scope() / ask_custom_ports() / ask_service_detection() /
+    ask_os_detection() / ask_timing() - it holds no command-building
+    logic of its own.
     Questions are asked in the same order build_argv() emits their
     flags, so the guided flow reads in the same order as the command
     it produces.
@@ -357,6 +390,9 @@ def get_scan_config_from_user(current=None):
     defaults = current if current is not None else scan.ScanConfig()
 
     technique = ask_technique(defaults.technique)
+    skip_host_discovery = ask_skip_host_discovery(
+        defaults.skip_host_discovery
+    )
     port_scope = ask_port_scope(defaults.port_scope)
 
     custom_ports = None
@@ -365,6 +401,7 @@ def get_scan_config_from_user(current=None):
 
     return scan.ScanConfig(
         technique=technique,
+        skip_host_discovery=skip_host_discovery,
         port_scope=port_scope,
         custom_ports=custom_ports,
         service_detection=ask_service_detection(defaults.service_detection),
@@ -415,6 +452,11 @@ def display_scan_preview(target_info, scan_config, elevated):
     technique_info = scan.TECHNIQUE_INFO[scan_config.technique]
     cli.list_items("Technique", [technique_info.name])
 
+    host_discovery_label = (
+        "Skipped (-Pn)" if scan_config.skip_host_discovery else "Enabled"
+    )
+    cli.list_items("Host discovery", [host_discovery_label])
+
     port_info = scan.PORT_SCOPE_INFO[scan_config.port_scope]
     if scan_config.port_scope == scan.PortScope.CUSTOM:
         port_scope_label = f"{port_info.name} ({scan_config.custom_ports})"
@@ -432,6 +474,8 @@ def display_scan_preview(target_info, scan_config, elevated):
     cli.list_items("Timing", [timing_info.name])
 
     purpose = technique_info.why
+    if scan_config.skip_host_discovery:
+        purpose = f"{purpose} {scan.HOST_DISCOVERY_INFO.why}"
     purpose = f"{purpose} {port_info.why}"
     if scan_config.service_detection:
         purpose = f"{purpose} {scan.SERVICE_DETECTION_INFO.why}"
@@ -461,6 +505,15 @@ def display_scan_preview(target_info, scan_config, elevated):
     print("Command:")
     print()
     print(f"  {' '.join(argv)}")
+
+    if scan.needs_ipv6_flag(target_info):
+        print()
+        cli.info(
+            "The -6 flag above was added automatically because this "
+            "target is an IPv6 address (or a hostname that only "
+            "resolved to IPv6 addresses) - Nmap scans over IPv4 unless "
+            "told otherwise. It is not a scan setting you chose."
+        )
 
     if scan_config.xml_output_path is not None:
         print()
