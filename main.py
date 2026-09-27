@@ -10,6 +10,7 @@ import executor
 import ports
 import results
 import scan
+import storage
 import target
 
 
@@ -818,6 +819,50 @@ def _cleanup_xml_output_path(path):
         pass
 
 
+def save_scan_result(
+    target_info, scan_config, scan_result,
+    results_dir=storage.DEFAULT_RESULTS_DIR,
+):
+    """
+    Save the structured results of a finished scan as JSON and tell
+    the user where they went. Returns the saved Path, or None.
+
+    Nothing is saved when there are no structured results (Nmap never
+    ran, timed out mid-write, or its XML didn't parse) - the raw
+    output already shown on screen is all there is in that case.
+
+    A failed save is reported, never raised: the scan has already
+    finished and its results are on screen, so a full disk or a
+    permissions problem must not turn into a crash.
+
+    The argv is rebuilt with scan.build_argv() rather than passed in:
+    build_argv() is pure and deterministic, so for the same target
+    and ScanConfig it returns exactly the list that was executed.
+    """
+
+    if scan_result is None:
+        cli.info("No structured results to save.")
+        return None
+
+    created_at = storage.now_utc()
+    record = storage.build_scan_record(
+        target_info,
+        scan_config,
+        scan.build_argv(target_info, scan_config),
+        scan_result,
+        created_at,
+    )
+
+    try:
+        path = storage.save_scan_record(record, created_at, results_dir)
+    except OSError as error:
+        cli.warning(f"Could not save scan results: {error}")
+        return None
+
+    cli.success(f"Scan results saved to {path}")
+    return path
+
+
 def show_startup_sequence():
     """
     Print the banner and report on the checks in environment.py.
@@ -909,7 +954,8 @@ def main():
         print()
         cli.success("Scan configuration approved.")
 
-        run_and_display_scan(target_info, scan_config)
+        scan_result = run_and_display_scan(target_info, scan_config)
+        save_scan_result(target_info, scan_config, scan_result)
     finally:
         _cleanup_xml_output_path(xml_output_path)
 
