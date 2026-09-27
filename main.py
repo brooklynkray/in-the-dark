@@ -609,36 +609,125 @@ def display_execution_result(result):
         cli.list_items("stderr", result.stderr.splitlines())
 
 
-def display_scan_results(scan_result):
+def format_port_line(port):
+    """
+    Turn one results.PortResult into a single display line, e.g.:
+
+        22/tcp open ssh (OpenSSH 8.2p1) - Ubuntu Linux; protocol 2.0
+        443/tcp open ssl/http (nginx 1.18.0)
+        8080/tcp open http-proxy [guessed from port number]
+
+    "ssl/" mirrors how Nmap itself shows a service wrapped in TLS.
+    The "guessed from port number" tag appears when Nmap's service
+    name came from its port-number lookup table rather than a real
+    probe response - worth knowing, because a service on an unusual
+    port is exactly where that guess is wrong.
+    """
+
+    line = f"{port.port}/{port.protocol} {port.state}"
+
+    if port.service:
+        service = port.service
+        if port.tunnel:
+            service = f"{port.tunnel}/{service}"
+        line += f" {service}"
+
+    if port.product:
+        line += f" ({port.product}"
+        if port.version:
+            line += f" {port.version}"
+        line += ")"
+
+    if port.extrainfo:
+        line += f" - {port.extrainfo}"
+
+    if port.service and port.method == "table":
+        line += " [guessed from port number]"
+
+    return line
+
+
+def display_scan_results(scan_result, scan_config=None):
     """
     Show a structured summary of what the scan found. Only ever
     called when parsing the captured XML succeeded - a parsing
     failure means this is simply never called, and
     display_execution_result()'s raw output remains the only view.
     This augments that raw view; it never replaces it.
+
+    `scan_config` is optional and only used to tailor the host-down
+    hint (there's no point suggesting -Pn if it was already used).
     """
 
     cli.subsection("Scan results")
 
-    cli.field("Host status", scan_result.host.status)
+    if scan_result.exit_status == "error":
+        detail = scan_result.error_message or "no details given"
+        cli.error(f"Nmap reported an error: {detail}")
 
-    if not scan_result.host.ports:
-        cli.info("No ports reported.")
+    if scan_result.host_seems_down:
+        cli.warning(
+            "Nmap reports the host as down - it did not answer Nmap's "
+            "host discovery probes, so no ports were scanned."
+        )
+        already_skipped = (
+            scan_config is not None and scan_config.skip_host_discovery
+        )
+        if not already_skipped:
+            cli.info(
+                "If you believe the host is up (e.g. a Windows lab "
+                "machine with its firewall on, or the lab VPN has only "
+                "just connected), run the scan again with host "
+                "discovery skipped (-Pn)."
+            )
+        else:
+            cli.info(
+                "Host discovery was already skipped, so check the "
+                "target address, that the lab machine is running, and "
+                "that your VPN connection is up."
+            )
+
+    host = scan_result.host
+    if host is None:
         return
 
-    lines = []
-    for port in scan_result.host.ports:
-        line = f"{port.port}/{port.protocol} {port.state}"
-        if port.service:
-            line += f" {port.service}"
-        if port.product:
-            line += f" ({port.product}"
-            if port.version:
-                line += f" {port.version}"
-            line += ")"
-        lines.append(line)
+    cli.field("Host status", host.status)
 
-    cli.list_items("Ports", lines)
+    addresses = [
+        address.addr for address in host.addresses
+        if address.addrtype in ("ipv4", "ipv6")
+    ]
+    if addresses:
+        cli.field("Address", ", ".join(addresses))
+
+    if host.hostnames:
+        cli.field("Hostnames", ", ".join(host.hostnames))
+
+    for extra in host.extra_ports:
+        cli.info(f"Not shown: {extra.count} {extra.state} ports.")
+
+    if host.ports:
+        cli.list_items(
+            "Ports", [format_port_line(port) for port in host.ports]
+        )
+    elif not scan_result.host_seems_down:
+        cli.info("No ports reported.")
+
+    if host.os_matches:
+        cli.list_items("OS guesses", [
+            f"{match.name} ({match.accuracy}%)"
+            if match.accuracy is not None else match.name
+            for match in host.os_matches[:3]
+        ])
+    elif (
+        scan_config is not None
+        and scan_config.os_detection
+        and not scan_result.host_seems_down
+    ):
+        cli.info(
+            "No OS guess - Nmap couldn't match the target's responses "
+            "to a known operating system with enough confidence."
+        )
 
 
 def _read_and_parse_xml_output(xml_output_path):
@@ -672,6 +761,9 @@ def run_and_display_scan(target_info, scan_config):
     handed to the executor unchanged; it is never rebuilt from the
     preview string.
 
+    Returns the parsed results.ScanResult, or None if there were no
+    structured results, so the caller can save them.
+
     scan_config.xml_output_path, if set, must already point at a
     real (possibly still-empty) file - this function does not create
     or clean it up. That is main()'s responsibility, since the same
@@ -688,7 +780,9 @@ def run_and_display_scan(target_info, scan_config):
 
     scan_result = _read_and_parse_xml_output(scan_config.xml_output_path)
     if scan_result is not None:
-        display_scan_results(scan_result)
+        display_scan_results(scan_result, scan_config)
+
+    return scan_result
 
 
 def _create_xml_output_path():

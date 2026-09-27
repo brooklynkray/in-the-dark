@@ -18,6 +18,7 @@ import os
 
 import executor
 import main
+import results
 import scan
 import target
 
@@ -671,3 +672,138 @@ def test_run_and_display_scan_uses_the_same_argv_that_was_previewed(
     main.run_and_display_scan(TARGET, scan_config)
 
     assert captured["argv"] == scan.build_argv(TARGET, scan_config)
+
+
+# ---------------------------------------------------------------------------
+# display_scan_results() / format_port_line() - richer results
+# ---------------------------------------------------------------------------
+
+
+def test_format_port_line_shows_tunnel_extrainfo_and_table_guess():
+    ssh = results.PortResult(
+        22, "tcp", "open", "ssh", "OpenSSH", "8.2p1",
+        extrainfo="Ubuntu Linux; protocol 2.0", method="probed",
+    )
+    https = results.PortResult(
+        443, "tcp", "open", "http", "nginx", "1.18.0", tunnel="ssl",
+    )
+    guessed = results.PortResult(
+        8080, "tcp", "open", "http-proxy", None, None, method="table",
+    )
+    closed = results.PortResult(25, "tcp", "closed", None, None, None)
+
+    assert main.format_port_line(ssh) == (
+        "22/tcp open ssh (OpenSSH 8.2p1) - Ubuntu Linux; protocol 2.0"
+    )
+    assert main.format_port_line(https) == "443/tcp open ssl/http (nginx 1.18.0)"
+    assert main.format_port_line(guessed) == (
+        "8080/tcp open http-proxy [guessed from port number]"
+    )
+    assert main.format_port_line(closed) == "25/tcp closed"
+
+
+def _up_host(**overrides):
+    fields = dict(
+        status="up",
+        ports=(results.PortResult(22, "tcp", "open", "ssh", None, None),),
+    )
+    fields.update(overrides)
+    return results.ScanResult(host=results.HostResult(**fields))
+
+
+def test_display_shows_address_hostnames_extraports_and_os(capsys):
+    scan_result = _up_host(
+        addresses=(
+            results.Address("10.10.10.5", "ipv4"),
+            results.Address("02:42:AC:11:00:02", "mac"),
+        ),
+        hostnames=("lab.thm",),
+        extra_ports=(results.ExtraPorts("closed", 999),),
+        os_matches=(
+            results.OsMatch("Linux 5.4", 96),
+            results.OsMatch("Linux 4.15", None),
+        ),
+    )
+    main.display_scan_results(scan_result)
+    output = capsys.readouterr().out
+
+    assert "10.10.10.5" in output
+    assert "02:42:AC:11:00:02" not in output   # MACs aren't addresses to scan
+    assert "lab.thm" in output
+    assert "Not shown: 999 closed ports." in output
+    assert "Linux 5.4 (96%)" in output
+    assert "Linux 4.15" in output
+
+
+def test_display_explains_missing_os_guess_only_when_os_detection_was_on(capsys):
+    main.display_scan_results(_up_host(), scan.ScanConfig(os_detection=True))
+    assert "No OS guess" in capsys.readouterr().out
+
+    main.display_scan_results(_up_host(), scan.ScanConfig(os_detection=False))
+    assert "No OS guess" not in capsys.readouterr().out
+
+
+DOWN_WITHOUT_HOST = results.ScanResult(host=None, hosts_up=0, hosts_down=1)
+
+
+def test_display_host_down_suggests_pn_when_it_was_not_used(capsys):
+    main.display_scan_results(DOWN_WITHOUT_HOST, scan.ScanConfig())
+    output = capsys.readouterr().out
+    assert "reports the host as down" in output
+    assert "(-Pn)" in output
+
+
+def test_display_host_down_with_pn_already_used_suggests_other_checks(capsys):
+    config = scan.ScanConfig(skip_host_discovery=True)
+    main.display_scan_results(DOWN_WITHOUT_HOST, config)
+    output = capsys.readouterr().out
+    assert "reports the host as down" in output
+    assert "already skipped" in output
+    assert "run the scan again with host discovery skipped" not in output
+
+
+def test_display_host_down_with_host_element_does_not_say_no_ports(capsys):
+    scan_result = results.ScanResult(
+        host=results.HostResult(status="down", ports=())
+    )
+    main.display_scan_results(scan_result, scan.ScanConfig(os_detection=True))
+    output = capsys.readouterr().out
+    assert "reports the host as down" in output
+    assert "No ports reported." not in output
+    assert "No OS guess" not in output
+
+
+def test_display_shows_nmap_run_error(capsys):
+    scan_result = results.ScanResult(
+        host=None, hosts_up=0, hosts_down=0,
+        exit_status="error", error_message="Something went wrong",
+    )
+    main.display_scan_results(scan_result)
+    output = capsys.readouterr().out
+    assert "Nmap reported an error: Something went wrong" in output
+    assert "reports the host as down" not in output
+
+
+def test_run_and_display_scan_returns_the_parsed_result(monkeypatch, tmp_path):
+    xml_path = tmp_path / "scan.xml"
+    xml_path.write_text(NORMAL_SCAN_XML, encoding="utf-8")
+    monkeypatch.setattr(
+        main.executor, "run", lambda argv: _fake_execution_result()
+    )
+
+    scan_config = scan.ScanConfig(xml_output_path=str(xml_path))
+    scan_result = main.run_and_display_scan(TARGET, scan_config)
+
+    assert scan_result.host.ports[0].port == 22
+
+
+def test_run_and_display_scan_returns_none_without_structured_results(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        main.executor, "run", lambda argv: _fake_execution_result()
+    )
+    scan_config = scan.ScanConfig(
+        xml_output_path=str(tmp_path / "never-created.xml")
+    )
+    assert main.run_and_display_scan(TARGET, scan_config) is None
