@@ -89,13 +89,27 @@ def _style(text: str, *styles: str) -> str:
 # ASCII banner
 # ---------------------------------------------------------------------------
 
+#
+# The design: a small, letter-spaced "I N  T H E" over a big block-letter
+# "DARK" that fades from bright at the top to dim at the bottom, as if
+# the word is sinking into the dark. The letters are baked in as static
+# strings (a design-time choice, like the previous logo) - no figlet or
+# other runtime dependency.
+#
+# Each block letter is drawn with two kinds of character:
+#   - "█" is the letter itself, coloured per row by _LOGO_ROW_SHADES
+#   - the box-drawing characters (╗ ║ ╔ ╝ ═ ╚) are its drop shadow,
+#     always drawn in one dark colour so the letter stands out
+
+LOGO_KICKER = "I N   T H E"
+
 LOGO_LINES = [
-    ' _____ _   _   _______ _    _ ______   _____          _____   _  __',
-    '|_   _| \\ | | |__   __| |  | |  ____| |  __ \\   /\\   |  __ \\ | |/ /',
-    '  | | |  \\| |    | |  | |__| | |__    | |  | | /  \\  | |__) || |/ /',
-    '  | | | . ` |    | |  |  __  |  __|   | |  | |/ /\\ \\ |  _  / | |\\ \\',
-    ' _| |_| |\\  |    | |  | |  | | |____  | |__| / ____ \\| | \\ \\ | |\\ \\',
-    '|_____|_| \\_|    |_|  |_|  |_|______| |_____/_/    \\_\\_|  \\_\\|_|\\_\\',
+    "██████╗  █████╗ ██████╗ ██╗  ██╗",
+    "██╔══██╗██╔══██╗██╔══██╗██║ ██╔╝",
+    "██║  ██║███████║██████╔╝█████╔╝ ",
+    "██║  ██║██╔══██║██╔══██╗██╔═██╗ ",
+    "██████╔╝██║  ██║██║  ██║██║  ██╗",
+    "╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝",
 ]
 
 _TAGLINE = (
@@ -103,18 +117,85 @@ _TAGLINE = (
     "& ENUMERATION",
 )
 
+_LOGO_BLOCK = "█"
+
+# 256-colour greyscale steps, one per logo row: 255 is near-white,
+# 238 is dark grey. 236 is the (darker still) shadow colour.
+_LOGO_ROW_SHADES = (255, 252, 249, 245, 241, 238)
+_LOGO_SHADOW_SHADE = 236
+_LOGO_KICKER_COLOUR = 45  # bright blue-cyan, a nod to the old logo
+
+
+def _supports_256_colours() -> bool:
+    """
+    Best-effort check for 256-colour support, from the environment
+    variables terminals conventionally set. Terminals that don't
+    advertise it get a simpler bold/dim fallback instead of escape
+    codes they might render as garbage.
+    """
+    term = os.environ.get("TERM", "")
+    colorterm = os.environ.get("COLORTERM", "")
+    return "256color" in term or colorterm in ("truecolor", "24bit")
+
+
+def _fg256(text: str, colour: int) -> str:
+    """Wrap `text` in a 256-colour foreground code (colour already checked)."""
+    return f"\033[38;5;{colour}m{text}{_RESET}"
+
+
+def _logo_row(line: str, row: int) -> str:
+    """
+    Colour one row of the DARK logo. Consecutive characters of the
+    same kind are grouped into one coloured run, so a row is a handful
+    of escape codes rather than one per character.
+    """
+    if not _COLOUR:
+        return line
+
+    if not _supports_256_colours():
+        # Fallback: top half bold, bottom half dim - still a fade.
+        return _style(line, "bold" if row < len(LOGO_LINES) // 2 else "dim")
+
+    shade = _LOGO_ROW_SHADES[row]
+    runs = []
+    for char in line:
+        colour = shade if char == _LOGO_BLOCK else _LOGO_SHADOW_SHADE
+        if char == " ":
+            colour = None
+        if runs and runs[-1][0] == colour:
+            runs[-1][1].append(char)
+        else:
+            runs.append((colour, [char]))
+
+    return "".join(
+        "".join(chars) if colour is None else _fg256("".join(chars), colour)
+        for colour, chars in runs
+    )
+
 
 def banner() -> None:
-    """Print the startup ASCII logo followed by the tagline."""
+    """
+    Print the startup logo followed by the tagline, centred over the
+    width of the rule() divider that follows it so the two line up.
+    """
     width = max(len(line) for line in LOGO_LINES)
+    indent = " " * max((RULE_WIDTH - width) // 2, 0)
+
+    kicker = LOGO_KICKER.center(width).rstrip()
+    if _COLOUR and _supports_256_colours():
+        kicker = _fg256(kicker, _LOGO_KICKER_COLOUR)
+    else:
+        kicker = _style(kicker, "cyan", "bold")
 
     print()
-    for line in LOGO_LINES:
-        print(_style(line, "cyan", "bold"))
+    print(indent + kicker)
+    print()
+    for row, line in enumerate(LOGO_LINES):
+        print(indent + _logo_row(line.rstrip(), row))
 
     print()
     for line in _TAGLINE:
-        print(_style(line.center(width), "dim"))
+        print(indent + _style(line.center(width).rstrip(), "dim"))
     print()
 
 

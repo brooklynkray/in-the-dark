@@ -29,6 +29,7 @@ def test_default_scan_config_is_top_1000_with_service_detection():
     assert config.timing == scan.Timing.T3
     assert config.technique == scan.Technique.CONNECT
     assert config.os_detection is False
+    assert config.skip_host_discovery is False
     assert config.custom_ports is None
     assert config.xml_output_path is None
 
@@ -348,9 +349,10 @@ def test_port_scope_and_service_detection_combinations(
 @pytest.mark.parametrize("technique", list(scan.Technique))
 @pytest.mark.parametrize("os_detection", [True, False])
 @pytest.mark.parametrize("xml_output_path", [None, "/tmp/scan.xml"])
+@pytest.mark.parametrize("skip_host_discovery", [True, False])
 def test_target_is_always_the_final_argv_element(
     port_scope, service_detection, timing, technique, os_detection,
-    xml_output_path,
+    xml_output_path, skip_host_discovery,
 ):
     # CUSTOM needs a companion value to be a valid ScanConfig at all -
     # None is the unreachable invariant-violation case tested
@@ -365,6 +367,7 @@ def test_target_is_always_the_final_argv_element(
         technique=technique,
         os_detection=os_detection,
         xml_output_path=xml_output_path,
+        skip_host_discovery=skip_host_discovery,
     )
     argv = scan.build_argv(make_target("example.com", "hostname"), config)
     assert argv[-1] == "example.com"
@@ -474,3 +477,79 @@ def test_advertised_os_detection_flag_matches_emitted_flag():
 
     assert advertised_flag in enabled_argv
     assert advertised_flag not in disabled_argv
+
+
+# ---------------------------------------------------------------------------
+# Skip host discovery (-Pn)
+# ---------------------------------------------------------------------------
+
+def test_skip_host_discovery_false_emits_no_dash_Pn():
+    argv = scan.build_argv(make_target("10.10.10.5"), scan.ScanConfig())
+    assert "-Pn" not in argv
+
+
+def test_skip_host_discovery_true_emits_dash_Pn_right_after_technique():
+    config = scan.ScanConfig(
+        skip_host_discovery=True,
+        port_scope=scan.PortScope.ALL_TCP,
+        timing=scan.Timing.T4,
+    )
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert argv == ["nmap", "-sT", "-Pn", "-p-", "-sV", "-T4", "10.10.10.5"]
+
+
+def test_advertised_host_discovery_flag_matches_emitted_flag():
+    advertised_flag = scan.HOST_DISCOVERY_INFO.flag
+    config = scan.ScanConfig(skip_host_discovery=True)
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert advertised_flag in argv
+
+
+# ---------------------------------------------------------------------------
+# IPv6 (-6) - derived from the validated target, never a user choice
+# ---------------------------------------------------------------------------
+
+def make_hostname(resolved_addresses):
+    return target.TargetInfo(
+        value="lab.example",
+        type="hostname",
+        resolved_addresses=list(resolved_addresses),
+    )
+
+
+def test_ipv6_address_target_emits_dash_6():
+    argv = scan.build_argv(make_target("2001:db8::10", "IPv6"), scan.ScanConfig())
+    assert argv == ["nmap", "-sT", "-sV", "-6", "2001:db8::10"]
+
+
+def test_ipv4_address_target_never_emits_dash_6():
+    argv = scan.build_argv(make_target("10.10.10.5"), scan.ScanConfig())
+    assert "-6" not in argv
+
+
+def test_hostname_resolving_only_to_ipv6_emits_dash_6():
+    target_info = make_hostname(["2001:db8::10", "2001:db8::11"])
+    assert scan.needs_ipv6_flag(target_info) is True
+    assert "-6" in scan.build_argv(target_info, scan.ScanConfig())
+
+
+def test_hostname_with_both_families_stays_on_ipv4():
+    target_info = make_hostname(["10.10.10.5", "2001:db8::10"])
+    assert scan.needs_ipv6_flag(target_info) is False
+    assert "-6" not in scan.build_argv(target_info, scan.ScanConfig())
+
+
+def test_unresolved_hostname_gets_no_dash_6():
+    # Nmap is left to report the resolution failure itself.
+    assert scan.needs_ipv6_flag(make_hostname([])) is False
+
+
+def test_dash_6_sits_after_timing_and_before_xml_output():
+    config = scan.ScanConfig(
+        timing=scan.Timing.T4, xml_output_path="/tmp/scan.xml"
+    )
+    argv = scan.build_argv(make_target("2001:db8::10", "IPv6"), config)
+    assert argv == [
+        "nmap", "-sT", "-sV", "-T4", "-6", "-oX", "/tmp/scan.xml",
+        "2001:db8::10",
+    ]

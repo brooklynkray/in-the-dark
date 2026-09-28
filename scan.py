@@ -21,6 +21,7 @@ Nothing in this module calls subprocess - execution lives in
 executor.py, which receives only the argv list this module builds.
 """
 
+import ipaddress
 from dataclasses import dataclass
 from enum import Enum
 
@@ -46,6 +47,8 @@ FLAG_TECHNIQUE_SYN = "-sS"
 FLAG_OS_DETECTION = "-O"
 FLAG_CUSTOM_PORTS = "-p"
 FLAG_XML_OUTPUT = "-oX"
+FLAG_SKIP_HOST_DISCOVERY = "-Pn"
+FLAG_IPV6 = "-6"
 
 
 class PortScope(Enum):
@@ -103,6 +106,12 @@ class ScanConfig:
     default in the first place. Callers must still show every chosen
     value, never assume it silently.
 
+    `skip_host_discovery` defaults to False - Nmap's own default is to
+    check a host is up before port scanning it, and skipping that
+    check is only worth its cost when there is a reason to think the
+    host is up but ignoring discovery probes (see
+    HOST_DISCOVERY_INFO).
+
     `custom_ports` is the one field that is not fully independent of
     the others: it must be None unless `port_scope` is CUSTOM, and
     must be a value already validated by ports.parse_custom_ports()
@@ -125,6 +134,7 @@ class ScanConfig:
     timing: Timing = Timing.T3
     technique: Technique = Technique.CONNECT
     os_detection: bool = False
+    skip_host_discovery: bool = False
     custom_ports: str | None = None
     xml_output_path: str | None = None
 
@@ -216,6 +226,21 @@ OS_DETECTION_INFO = CapabilityInfo(
          "error. Even with privileges, results are a best guess and "
          "are most reliable when the scan found at least one open "
          "and one closed port to compare.",
+)
+
+HOST_DISCOVERY_INFO = CapabilityInfo(
+    name="Skip host discovery",
+    what="Skips Nmap's host discovery ('ping') phase and treats the "
+         "target as up, going straight to port scanning.",
+    why="Needed when a host is up but ignores Nmap's discovery "
+        "probes - common on Windows lab machines with the firewall "
+        "on. Without it, Nmap reports the host as down and scans no "
+        "ports at all.",
+    flag=FLAG_SKIP_HOST_DISCOVERY,
+    cost="If the host really is down, every port probe has to time "
+         "out, so the scan is much slower and every port comes back "
+         "filtered. Only worth it when you have a reason to believe "
+         "the host is up.",
 )
 
 TIMING_INFO = {
@@ -318,6 +343,40 @@ TECHNIQUE_INFO = {
 # Command construction
 # ---------------------------------------------------------------------------
 
+def needs_ipv6_flag(target_info):
+    """
+    Decide whether Nmap needs -6 to scan this target.
+
+    Nmap scans over IPv4 unless told otherwise with -6, so:
+
+    - An IPv6 address target always needs -6.
+    - A hostname needs -6 only if DNS enrichment found IPv6 addresses
+      and no IPv4 addresses at all. When a name has both, Nmap's
+      default (IPv4) is fine and the least surprising choice.
+    - An IPv4 target never needs it.
+
+    This reads only data already on the validated TargetInfo - it
+    does no DNS lookups of its own, so build_argv() stays pure. A
+    hostname that failed to resolve (no addresses either way) gets no
+    -6, leaving Nmap to report the resolution failure itself.
+    """
+
+    if target_info.type == "IPv6":
+        return True
+
+    if target_info.type != "hostname":
+        return False
+
+    addresses = [
+        ipaddress.ip_address(address)
+        for address in target_info.resolved_addresses
+    ]
+    has_ipv4 = any(address.version == 4 for address in addresses)
+    has_ipv6 = any(address.version == 6 for address in addresses)
+
+    return has_ipv6 and not has_ipv4
+
+
 def build_argv(target_info, scan_config):
     """
     Turn a validated TargetInfo and a ScanConfig into an Nmap argv
@@ -325,13 +384,16 @@ def build_argv(target_info, scan_config):
 
         1. nmap
         2. scan technique
-        3. port-scope option, if one exists
-        4. service/version detection, if enabled
-        5. OS detection, if enabled
-        6. timing option, if one exists
-        7. XML output path, if one exists (tool-managed plumbing,
+        3. skip host discovery (-Pn), if enabled
+        4. port-scope option, if one exists
+        5. service/version detection, if enabled
+        6. OS detection, if enabled
+        7. timing option, if one exists
+        8. IPv6 mode (-6), if the target needs it - derived from the
+           validated target, never a user choice (see needs_ipv6_flag)
+        9. XML output path, if one exists (tool-managed plumbing,
            not a scan choice - see ScanConfig's docstring)
-        8. target
+        10. target
 
     Pure and deterministic: no subprocess, no printing, no shell
     involvement, no privilege awareness - this function has no idea
@@ -360,6 +422,9 @@ def build_argv(target_info, scan_config):
         argv.append(FLAG_TECHNIQUE_CONNECT)
     elif scan_config.technique == Technique.SYN:
         argv.append(FLAG_TECHNIQUE_SYN)
+
+    if scan_config.skip_host_discovery:
+        argv.append(FLAG_SKIP_HOST_DISCOVERY)
 
     if scan_config.port_scope == PortScope.COMMON:
         argv.append(FLAG_COMMON_PORTS)
@@ -399,6 +464,9 @@ def build_argv(target_info, scan_config):
     elif scan_config.timing == Timing.T5:
         argv.append(FLAG_TIMING_T5)
     # T3 is Nmap's own default timing template, so it adds no flag.
+
+    if needs_ipv6_flag(target_info):
+        argv.append(FLAG_IPV6)
 
     if scan_config.xml_output_path is not None:
         argv.append(FLAG_XML_OUTPUT)
