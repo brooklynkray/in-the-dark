@@ -440,12 +440,17 @@ def display_scan_preview(target_info, scan_config, elevated):
     scan.build_argv() - there is no separate, hand-written preview
     string to drift out of sync with it.
 
+    If scan_config.run_with_sudo is set, the preview explains that
+    only Nmap will be run with sudo, and the command shown includes
+    the sudo prefix - because it is built by the same build_argv()
+    call pattern that execution uses.
+
     `elevated` is the current session's privilege state, from
     environment.py. It is used only to show an informational warning
     when a privileged capability (SYN, OS detection) is selected
-    without privilege - it never blocks a choice, never changes
-    scan_config, and never changes the argv that gets built or
-    executed.
+    without privilege and without sudo - it never blocks a choice,
+    never changes scan_config, and never changes the argv that gets
+    built or executed.
     """
 
     cli.subsection("Scan configuration")
@@ -488,8 +493,16 @@ def display_scan_preview(target_info, scan_config, elevated):
     print("Purpose:")
     print(f"  {purpose}")
 
-    if not elevated:
-        needed = _privilege_requiring_capabilities(scan_config)
+    needed = _privilege_requiring_capabilities(scan_config)
+    if scan_config.run_with_sudo and needed:
+        print()
+        cli.warning(
+            f"This scan needs root privileges for {' and '.join(needed)}. "
+            "If you approve it, only Nmap will be run with sudo - the rest "
+            "of In the Dark stays unprivileged - and sudo will ask for "
+            "your password first."
+        )
+    elif not elevated:
         if needed:
             print()
             cli.warning(
@@ -556,13 +569,25 @@ def get_confirmed_scan_config(target_info, elevated, xml_output_path=None):
                 scan_config, xml_output_path=xml_output_path
             )
 
+        # Recomputed on every pass, so reconfiguring away from SYN / OS
+        # detection drops sudo again. Never set when already root.
+        needs_sudo = (
+            not elevated
+            and bool(_privilege_requiring_capabilities(scan_config))
+        )
+        scan_config = dataclasses.replace(scan_config, run_with_sudo=needs_sudo)
+
         display_scan_preview(target_info, scan_config, elevated)
+
+        approve_label = (
+            "Yes, run Nmap with sudo" if needs_sudo else "Yes, continue"
+        )
 
         print()
         while True:
             cli.info("Is this scan configuration correct?")
             cli.menu([
-                ("1", "Yes, continue"),
+                ("1", approve_label),
                 ("2", "Reconfigure"),
                 ("3", "Exit"),
             ])
@@ -835,6 +860,27 @@ def _cleanup_xml_output_path(path):
         pass
 
 
+def authenticate_for_scan():
+    """
+    Get sudo's permission, interactively, before running a scan that
+    was approved to run Nmap with sudo. Returns True to go ahead, or
+    False - after telling the user why - if sudo refused, in which
+    case nothing is run.
+    """
+
+    print()
+    cli.info(
+        "This scan runs Nmap with sudo. sudo will ask for your password "
+        "if it needs it."
+    )
+
+    if executor.authenticate_sudo():
+        return True
+
+    cli.error("sudo did not grant permission, so the scan was not run.")
+    return False
+
+
 def save_scan_result(
     target_info, scan_config, scan_result,
     results_dir=storage.DEFAULT_RESULTS_DIR,
@@ -971,6 +1017,9 @@ def main():
 
         print()
         cli.success("Scan configuration approved.")
+
+        if scan_config.run_with_sudo and not authenticate_for_scan():
+            return
 
         scan_result = run_and_display_scan(target_info, scan_config)
         save_scan_result(target_info, scan_config, scan_result)

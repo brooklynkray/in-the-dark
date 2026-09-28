@@ -15,10 +15,16 @@ consented to.
   success, a non-zero exit, a missing executable, and a timeout
   distinguishable without parsing an exception string.
 - run(): executes argv via subprocess with shell=False, always.
+- authenticate_sudo(): runs the fixed command "sudo -v" so the user
+  can enter their password before a scan that was approved to run
+  Nmap with sudo. It takes no arguments, so nothing can be added to
+  that command.
 
 No shell, no os.system(), no os.popen(), no command-string
-construction, no privilege escalation, no output parsing. What Nmap
-printed is returned as-is for the caller to display.
+construction, no output parsing. This module never decides to use
+sudo: a sudo prefix only ever arrives as part of an argv the user has
+already previewed and approved. What Nmap printed is returned as-is
+for the caller to display.
 """
 
 import subprocess
@@ -90,3 +96,25 @@ def run(argv, timeout=DEFAULT_TIMEOUT_SECONDS):
         timed_out=False,
         executable_not_found=False,
     )
+
+
+def authenticate_sudo():
+    """
+    Ask sudo to authenticate this user, interactively, before a scan
+    that needs root. Returns True if sudo accepted the user, False if
+    it refused (wrong password, not allowed to use sudo) or sudo isn't
+    installed.
+
+    Deliberately not captured: sudo's password prompt has to reach the
+    user's terminal. The scan itself then runs with "sudo -n", which
+    never prompts, so a password prompt can never be hidden inside
+    captured output or eat into the scan timeout. There is no timeout
+    here either - sudo applies its own password timeout.
+    """
+
+    try:
+        completed = subprocess.run(["sudo", "-v"], shell=False)
+    except FileNotFoundError:
+        return False
+
+    return completed.returncode == 0

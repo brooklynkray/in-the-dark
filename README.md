@@ -43,7 +43,7 @@ Stages 1 and 2 (host/port discovery and service/version detection) are built aro
 
 - Python 3.11 or newer
 - Nmap on your `PATH`
-- SYN scans (`-sS`) and OS detection (`-O`) need root; everything else runs unprivileged
+- SYN scans (`-sS`) and OS detection (`-O`) need root. In the Dark itself always runs as your normal user; for those scans it offers to run only Nmap with `sudo`, which needs your user to be allowed to use sudo
 
 On Arch-based systems (including Omarchy):
 
@@ -79,6 +79,7 @@ This is a tool that runs other programs and handles data from hosts it scans, so
 - **No free-text Nmap flags.** Every option maps to a fixed, allow-listed flag. A free-text flag box would be an injection surface even without a shell (for example `--script` or output options).
 - **Targets are validated before use.** Only IP addresses and well-formed hostnames are accepted, so a value that starts with `-` can never be read by Nmap as an option.
 - **Nmap output is untrusted input.** Banners and product strings come from the target. The XML parser never crashes on malformed or unexpected input, and treats field contents as inert data.
+- **Only Nmap is ever elevated, and only with consent.** When a scan needs root, the preview shows the exact command, `sudo -n -- nmap ...`, and the approval option says so. After approval, `sudo -v` asks for your password in the open; the scan then runs with `-n`, so sudo can never sit waiting on a hidden password prompt. Input handling, parsing of untrusted Nmap output and saving results never run as root. Because Nmap options such as `--script` can run arbitrary code, the no-free-text-flags rule is what stops a root-run Nmap from becoming a root shell.
 - **Temporary XML output** goes in a private, unpredictably named `mkdtemp` directory (mode 0700) and is always removed afterwards. A shared `/tmp` file would be refused to a root-run Nmap by the kernel's `fs.protected_regular` hardening.
 - **Saved results** get generated file names (never built from the target, so no path traversal), are created without overwriting anything, and are readable only by your user (`0600`). Odd characters from the target are stored as `\uXXXX` escapes.
 

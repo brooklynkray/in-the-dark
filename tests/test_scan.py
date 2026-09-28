@@ -553,3 +553,41 @@ def test_dash_6_sits_after_timing_and_before_xml_output():
         "nmap", "-sT", "-sV", "-T4", "-6", "-oX", "/tmp/scan.xml",
         "2001:db8::10",
     ]
+
+
+# ---------------------------------------------------------------------------
+# run_with_sudo - only ever a prefix, never a change to the Nmap command
+# ---------------------------------------------------------------------------
+
+def test_sudo_is_never_added_unless_run_with_sudo_is_set():
+    config = scan.ScanConfig(technique=scan.Technique.SYN, os_detection=True)
+    argv = scan.build_argv(make_target("10.10.10.5"), config)
+    assert argv[0] == "nmap"
+    assert "sudo" not in argv
+
+
+def test_run_with_sudo_only_prefixes_the_nmap_command():
+    config = scan.ScanConfig(
+        technique=scan.Technique.SYN,
+        os_detection=True,
+        xml_output_path="/tmp/in-the-dark-abc123/nmap.xml",
+    )
+    target_info = make_target("10.10.10.5")
+
+    plain = scan.build_argv(target_info, config)
+    with_sudo = scan.build_argv(
+        target_info, dataclasses.replace(config, run_with_sudo=True)
+    )
+
+    assert with_sudo[:3] == ["sudo", "-n", "--"]
+    assert with_sudo[3:] == plain
+
+
+def test_with_sudo_the_target_stays_last_and_after_the_option_terminator():
+    config = scan.ScanConfig(run_with_sudo=True)
+    target_info = make_target("scanme.example.com", "Hostname")
+    argv = scan.build_argv(target_info, config)
+
+    assert argv.count("--") == 1
+    assert argv.index("--") < argv.index("nmap")
+    assert argv[-1] == "scanme.example.com"

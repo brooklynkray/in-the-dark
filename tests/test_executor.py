@@ -124,3 +124,47 @@ def test_run_invokes_subprocess_with_argv_list_and_shell_disabled(monkeypatch):
     assert captured["argv"] == argv
     assert isinstance(captured["argv"], list)
     assert captured["kwargs"]["shell"] is False
+
+
+# ---------------------------------------------------------------------------
+# authenticate_sudo()
+# ---------------------------------------------------------------------------
+
+class _FakeCompleted:
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+
+def _fake_sudo(monkeypatch, returncode=0, missing=False):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        if missing:
+            raise FileNotFoundError("sudo")
+        return _FakeCompleted(returncode)
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+    return calls
+
+
+def test_authenticate_sudo_runs_exactly_sudo_v_with_the_prompt_visible(monkeypatch):
+    calls = _fake_sudo(monkeypatch, returncode=0)
+    assert executor.authenticate_sudo() is True
+
+    argv, kwargs = calls[0]
+    assert argv == ["sudo", "-v"]
+    assert kwargs.get("shell") is False
+    # Not captured, so sudo's password prompt reaches the terminal.
+    assert not kwargs.get("capture_output")
+    assert kwargs.get("stdout") is None
+
+
+def test_authenticate_sudo_returns_false_when_sudo_refuses(monkeypatch):
+    _fake_sudo(monkeypatch, returncode=1)
+    assert executor.authenticate_sudo() is False
+
+
+def test_authenticate_sudo_returns_false_when_sudo_is_not_installed(monkeypatch):
+    _fake_sudo(monkeypatch, missing=True)
+    assert executor.authenticate_sudo() is False
