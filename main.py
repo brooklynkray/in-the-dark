@@ -788,33 +788,49 @@ def run_and_display_scan(target_info, scan_config):
 
 def _create_xml_output_path():
     """
-    Reserve a secure, unique temporary file path for Nmap's -oX
-    output. Uses tempfile.mkstemp() so the path can't be predicted or
-    raced by another process, rather than a hand-built name in a
-    shared temp directory. The file descriptor is closed immediately
-    after creation - this process never writes to it itself, Nmap
-    will open the path and write to it, and holding our own handle
-    open in the meantime is unnecessary and, on Windows in
-    particular, can interact awkwardly with another process trying
-    to write to the same file.
+    Reserve a secure, unique path for Nmap's -oX output, inside a
+    private temporary directory made just for this run.
+
+    tempfile.mkdtemp() creates the directory with an unpredictable
+    name and mode 0700, so only this user can see into it. The XML
+    file itself is not created here - Nmap creates it when it runs.
+
+    Why a private directory rather than a file directly in /tmp:
+    /tmp is shared by every user and has the sticky bit set. Linux's
+    fs.protected_regular hardening (on by default on systemd distros)
+    refuses to let a process - including root - open an existing file
+    there that another user owns. A root-run Nmap therefore can't write
+    into a file this user pre-created in /tmp ("Permission denied").
+    Inside a private directory that protection doesn't apply, and no
+    other user can plant a file at this path in the first place.
     """
 
-    file_descriptor, path = tempfile.mkstemp(
-        suffix=".xml", prefix="in-the-dark-"
-    )
-    os.close(file_descriptor)
-    return path
+    private_dir = tempfile.mkdtemp(prefix="in-the-dark-")
+    return os.path.join(private_dir, "nmap.xml")
 
 
 def _cleanup_xml_output_path(path):
     """
-    Best-effort removal of the temporary XML file. Never raises - a
-    cleanup failure must not crash a scan that already completed;
-    worst case is a harmless leftover file in the OS temp directory.
+    Best-effort removal of the XML file and its private directory.
+    Never raises - a cleanup failure must not crash a scan that already
+    completed; worst case is a harmless leftover in the OS temp
+    directory.
+
+    Deliberately not a recursive delete. The file is removed by name,
+    then the directory with os.rmdir(), which only succeeds on an empty
+    directory - so a wrong path can never take anything else with it.
+    Removing the file works even if a root-run Nmap created it, because
+    deleting a file depends on write permission to the directory that
+    contains it, and that directory belongs to this user.
     """
 
     try:
         os.remove(path)
+    except OSError:
+        pass
+
+    try:
+        os.rmdir(os.path.dirname(path))
     except OSError:
         pass
 
