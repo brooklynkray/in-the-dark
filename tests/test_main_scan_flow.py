@@ -833,3 +833,121 @@ def test_run_and_display_scan_returns_none_without_structured_results(
         xml_output_path=str(tmp_path / "never-created.xml")
     )
     assert main.run_and_display_scan(TARGET, scan_config) is None
+
+
+# ---------------------------------------------------------------------------
+# Running only Nmap with sudo, when a scan needs root
+# ---------------------------------------------------------------------------
+#
+# Answers, in order: technique, -Pn, port scope, service detection,
+# OS detection, timing, then the consent menu.
+
+SYN_THEN_APPROVE = ["2", "", "", "", "", "", "1"]
+SUDO_EXPLANATION = "only Nmap will be run with sudo"
+
+
+def test_syn_without_privilege_is_approved_to_run_nmap_with_sudo(monkeypatch, capsys):
+    queued_input(monkeypatch, SYN_THEN_APPROVE)
+    config = main.get_confirmed_scan_config(TARGET, elevated=False)
+    output = capsys.readouterr().out
+
+    assert config.run_with_sudo is True
+    assert "Yes, run Nmap with sudo" in output
+    assert "sudo -n -- nmap -sS" in output
+    assert SUDO_EXPLANATION in output
+
+
+def test_syn_when_already_root_never_uses_sudo(monkeypatch, capsys):
+    queued_input(monkeypatch, SYN_THEN_APPROVE)
+    config = main.get_confirmed_scan_config(TARGET, elevated=True)
+    output = capsys.readouterr().out
+
+    assert config.run_with_sudo is False
+    assert "sudo" not in output
+
+
+def test_unprivileged_connect_scan_never_uses_sudo(monkeypatch, capsys):
+    queued_input(monkeypatch, ["", "", "", "", "", "", "1"])
+    config = main.get_confirmed_scan_config(TARGET, elevated=False)
+    output = capsys.readouterr().out
+
+    assert config.run_with_sudo is False
+    assert "sudo" not in output
+
+
+def test_reconfiguring_away_from_syn_drops_sudo(monkeypatch):
+    queued_input(
+        monkeypatch,
+        [
+            "2", "", "", "", "", "", "2",  # pass 1: SYN, then Reconfigure
+            "1", "", "", "", "", "", "1",  # pass 2: back to Connect, approve
+        ],
+    )
+    config = main.get_confirmed_scan_config(TARGET, elevated=False)
+    assert config.technique == scan.Technique.CONNECT
+    assert config.run_with_sudo is False
+
+
+def test_blank_input_never_approves_running_with_sudo(monkeypatch):
+    # A blank answer at the consent menu is rejected, not taken as yes.
+    queued_input(monkeypatch, ["2", "", "", "", "", "", "", "3"])
+    assert main.get_confirmed_scan_config(TARGET, elevated=False) is None
+
+
+def test_preview_with_sudo_explains_it_instead_of_warning_of_failure(capsys):
+    scan_config = scan.ScanConfig(
+        technique=scan.Technique.SYN, run_with_sudo=True
+    )
+    main.display_scan_preview(TARGET, scan_config, elevated=False)
+    output = capsys.readouterr().out
+
+    assert SUDO_EXPLANATION in output
+    assert "sudo -n -- nmap -sS" in output
+    assert WARNING_TEXT not in output
+
+
+def run_main_with(monkeypatch, scan_config, sudo_grants):
+    """Run main() with every interactive step replaced by a fake."""
+    calls = {"authenticated": 0, "ran": []}
+
+    def fake_authenticate():
+        calls["authenticated"] += 1
+        return sudo_grants
+
+    monkeypatch.setattr(main, "show_startup_sequence", lambda: False)
+    monkeypatch.setattr(main, "get_target_from_user", lambda: TARGET)
+    monkeypatch.setattr(
+        main, "get_confirmed_scan_config",
+        lambda target_info, elevated, xml_output_path: scan_config,
+    )
+    monkeypatch.setattr(main.executor, "authenticate_sudo", fake_authenticate)
+    monkeypatch.setattr(
+        main, "run_and_display_scan",
+        lambda target_info, config: calls["ran"].append(config),
+    )
+    monkeypatch.setattr(main, "save_scan_result", lambda *args: None)
+
+    main.main()
+    return calls
+
+
+def test_scan_is_not_run_when_sudo_refuses(monkeypatch, capsys):
+    calls = run_main_with(
+        monkeypatch, scan.ScanConfig(run_with_sudo=True), sudo_grants=False
+    )
+    assert calls["authenticated"] == 1
+    assert calls["ran"] == []
+    assert "the scan was not run" in capsys.readouterr().out
+
+
+def test_scan_runs_after_sudo_grants_permission(monkeypatch):
+    config = scan.ScanConfig(run_with_sudo=True)
+    calls = run_main_with(monkeypatch, config, sudo_grants=True)
+    assert calls["authenticated"] == 1
+    assert calls["ran"] == [config]
+
+
+def test_sudo_is_never_asked_for_when_the_scan_does_not_need_it(monkeypatch):
+    calls = run_main_with(monkeypatch, scan.ScanConfig(), sudo_grants=True)
+    assert calls["authenticated"] == 0
+    assert len(calls["ran"]) == 1

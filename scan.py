@@ -127,6 +127,14 @@ class ScanConfig:
     set only by main.py's execution orchestration. Unlike
     custom_ports it has no coupling with any other field - it is
     always independently valid, set or not.
+
+    `run_with_sudo` is tool-managed in the same way: it has no guided
+    question. main.py sets it only when the chosen scan needs root
+    (SYN scanning, OS detection) and this session isn't already root.
+    It makes build_argv() prefix the command with sudo, so the command
+    the user previews and approves is exactly the one that runs -
+    sudo included. Only the Nmap process is elevated; In the Dark
+    itself never runs as root.
     """
 
     port_scope: PortScope = PortScope.TOP_1000
@@ -137,6 +145,7 @@ class ScanConfig:
     skip_host_discovery: bool = False
     custom_ports: str | None = None
     xml_output_path: str | None = None
+    run_with_sudo: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +391,7 @@ def build_argv(target_info, scan_config):
     Turn a validated TargetInfo and a ScanConfig into an Nmap argv
     list, in canonical order:
 
+        0. sudo -n --, only if run_with_sudo is set (see below)
         1. nmap
         2. scan technique
         3. skip host discovery (-Pn), if enabled
@@ -414,9 +424,19 @@ def build_argv(target_info, scan_config):
     further explicit steps in this same sequence, at defined
     positions - this function is not meant to become a loop over
     metadata.
+
+    With run_with_sudo, the Nmap command is prefixed with exactly
+    ["sudo", "-n", "--"] and is otherwise identical. -n means sudo
+    must never prompt for a password here (the password is asked for
+    separately, before the scan, where the user can see the prompt).
+    "--" ends sudo's own option parsing, so nothing after it can ever
+    be read as an option to sudo. Everything after it is still built
+    only from allow-listed choices - which matters far more once Nmap
+    runs as root, because Nmap options such as --script can run
+    arbitrary code.
     """
 
-    argv = ["nmap"]
+    argv = ["sudo", "-n", "--", "nmap"] if scan_config.run_with_sudo else ["nmap"]
 
     if scan_config.technique == Technique.CONNECT:
         argv.append(FLAG_TECHNIQUE_CONNECT)
