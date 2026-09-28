@@ -4,9 +4,12 @@ import dataclasses
 import os
 import tempfile
 
+import shutil
+
 import cli
 import environment
 import executor
+import guidance
 import ports
 import results
 import scan
@@ -766,6 +769,63 @@ def display_scan_results(scan_result, scan_config=None):
             "No OS guess - Nmap couldn't match the target's responses "
             "to a known operating system with enough confidence."
         )
+
+    guidance_target = addresses[0] if addresses else (
+        host.hostnames[0] if host.hostnames else "<target>"
+    )
+    display_guidance(guidance_target, host.ports)
+
+
+def _tool_installed(name):
+    """Whether a suggested tool is on this machine's PATH."""
+    return shutil.which(name) is not None
+
+
+def display_guidance(target, ports):
+    """
+    Show "where to look next" guidance for each open port, using the
+    pure producers in guidance.py. This layer does the two things
+    guidance.py deliberately does not: it renders, and it checks
+    whether each suggested tool is actually installed on this machine,
+    marking any that isn't so the user isn't sent to run a command they
+    don't yet have. `target` is the address (or hostname) to put in the
+    example commands.
+    """
+
+    entries = [
+        (port, guidance.guidance_for(target, port))
+        for port in ports
+        if port.state == "open"
+    ]
+    entries = [(port, advice) for port, advice in entries if advice is not None]
+
+    if not entries:
+        return
+
+    cli.subsection("Where to look next")
+
+    for port, advice in entries:
+        print()
+        print(format_port_line(port))
+
+        cli.field("What it is", advice.what, width=16)
+        cli.field("Why it matters", advice.why, width=16)
+
+        if advice.caution:
+            cli.warning(advice.caution)
+
+        numbered = [f"{i}. {step}" for i, step in enumerate(advice.checks, 1)]
+        cli.list_items("Check next", numbered)
+
+        if advice.commands:
+            print("Suggested commands:")
+            for command in advice.commands:
+                missing = "" if _tool_installed(command.tool) else "  (not installed)"
+                print(f"  {command.command}{missing}")
+                print(f"      {command.purpose}")
+
+        for note in advice.notes:
+            cli.info(note)
 
 
 def _read_and_parse_xml_output(xml_output_path):

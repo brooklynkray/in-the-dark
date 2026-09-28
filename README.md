@@ -38,6 +38,7 @@ Stages 1 and 2 (host/port discovery and service/version detection) are built aro
 3. Review a preview of the exact command and what each choice does, then give explicit consent
 4. Nmap runs; raw output is shown, plus a structured summary parsed from Nmap's XML
 5. The structured results are saved as JSON in `results/` for later stages to load
+6. For each open port, "Where to look next" guidance explains what the service is, why it matters, what to check, and which established tools to use
 
 ## Requirements
 
@@ -81,6 +82,7 @@ This is a tool that runs other programs and handles data from hosts it scans, so
 - **Nmap output is untrusted input.** Banners and product strings come from the target. The XML parser never crashes on malformed or unexpected input, and treats field contents as inert data.
 - **Only Nmap is ever elevated, and only with consent.** When a scan needs root, the preview shows the exact command, `sudo -n -- nmap ...`, and the approval option says so. After approval, `sudo -v` asks for your password in the open; the scan then runs with `-n`, so sudo can never sit waiting on a hidden password prompt. Input handling, parsing of untrusted Nmap output and saving results never run as root. Because Nmap options such as `--script` can run arbitrary code, the no-free-text-flags rule is what stops a root-run Nmap from becoming a root shell.
 - **Temporary XML output** goes in a private, unpredictably named `mkdtemp` directory (mode 0700) and is always removed afterwards. A shared `/tmp` file would be refused to a root-run Nmap by the kernel's `fs.protected_regular` hardening.
+- **Guidance never claims a vulnerability.** The "where to look next" advice reacts only to what Nmap observed (confirmed vs guessed service, identified version, TLS, port number). An identified version becomes a `searchsploit` lead to verify, never a confirmed finding, and suggested tools are checked against your `PATH` and marked when not installed rather than assumed present.
 - **Saved results** get generated file names (never built from the target, so no path traversal), are created without overwriting anything, and are readable only by your user (`0600`). Odd characters from the target are stored as `\uXXXX` escapes.
 
 ## Results Files

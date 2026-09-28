@@ -993,3 +993,69 @@ def test_an_exact_os_match_is_not_labelled_as_a_guess(capsys):
 def test_a_missing_accuracy_is_never_treated_as_exact(capsys):
     output = _display_os(capsys, results.OsMatch("Linux 5.4", None))
     assert NO_EXACT_MATCH in output
+
+
+# ---------------------------------------------------------------------------
+# "Where to look next" guidance rendering (display_guidance)
+# ---------------------------------------------------------------------------
+
+def _all_tools_installed(monkeypatch):
+    monkeypatch.setattr(main.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+
+def _no_tools_installed(monkeypatch):
+    monkeypatch.setattr(main.shutil, "which", lambda name: None)
+
+
+def test_guidance_section_is_shown_for_an_open_web_port(monkeypatch, capsys):
+    _all_tools_installed(monkeypatch)
+    host = _up_host(
+        ports=(results.PortResult(80, "tcp", "open", "http", "nginx", "1.18.0",
+                                  method="probed"),),
+    )
+    main.display_scan_results(host)
+    output = capsys.readouterr().out
+
+    assert "Where to look next" in output
+    assert "web service" in output
+    assert "whatweb http://" in output
+
+
+def test_missing_tools_are_marked_not_installed(monkeypatch, capsys):
+    _no_tools_installed(monkeypatch)
+    host = _up_host(
+        ports=(results.PortResult(80, "tcp", "open", "http", None, None,
+                                  method="probed"),),
+    )
+    main.display_scan_results(host)
+    output = capsys.readouterr().out
+    assert "(not installed)" in output
+
+
+def test_installed_tools_are_not_marked(monkeypatch, capsys):
+    _all_tools_installed(monkeypatch)
+    host = _up_host(
+        ports=(results.PortResult(80, "tcp", "open", "http", None, None,
+                                  method="probed"),),
+    )
+    main.display_scan_results(host)
+    assert "(not installed)" not in capsys.readouterr().out
+
+
+def test_guessed_service_shows_a_confirm_first_warning(monkeypatch, capsys):
+    _all_tools_installed(monkeypatch)
+    host = _up_host(
+        ports=(results.PortResult(8080, "tcp", "open", "http-proxy", None, None,
+                                  method="table"),),
+    )
+    main.display_scan_results(host)
+    output = capsys.readouterr().out
+    assert "[!]" in output
+    assert "guessed from the port number" in output
+
+
+def test_no_guidance_section_when_there_are_no_open_ports(monkeypatch, capsys):
+    _all_tools_installed(monkeypatch)
+    host = _up_host(ports=(results.PortResult(25, "tcp", "closed", None, None, None),))
+    main.display_scan_results(host)
+    assert "Where to look next" not in capsys.readouterr().out
