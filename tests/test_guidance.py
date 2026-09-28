@@ -35,10 +35,11 @@ def test_a_closed_port_gets_no_guidance():
     assert guidance.guidance_for(TARGET, _port(state="closed")) is None
 
 
-def test_an_unknown_service_falls_back_to_generic_guidance():
-    advice = guidance.guidance_for(TARGET, _port(service="ssh", port=22))
+def test_an_unhandled_service_falls_back_to_generic_guidance():
+    # telnet has no producer of its own yet, so it must hit the fallback.
+    advice = guidance.guidance_for(TARGET, _port(service="telnet", port=23))
     assert advice is not None
-    assert "ssh" in advice.what
+    assert "telnet" in advice.what
     assert advice.commands == ()   # generic guidance suggests no tools yet
 
 
@@ -115,3 +116,44 @@ def test_a_version_produces_a_searchsploit_lead_phrased_as_something_to_verify()
 def test_no_version_means_no_searchsploit_lead():
     advice = guidance.guidance_for(TARGET, _port(method="probed"))
     assert not any("searchsploit" in note for note in advice.notes)
+
+
+# ---------------------------------------------------------------------------
+# FTP / SMB / SSH / DNS producers
+# ---------------------------------------------------------------------------
+
+def test_ftp_suggests_an_anonymous_login_check():
+    advice = guidance.guidance_for(TARGET, _port(service="ftp", port=21))
+    assert "anonymous" in " ".join(advice.checks).lower()
+    assert any(command.tool == "ftp" for command in advice.commands)
+
+
+def test_smb_service_names_all_route_to_smb_guidance():
+    for name in ("microsoft-ds", "netbios-ssn", "smb"):
+        advice = guidance.guidance_for(TARGET, _port(service=name, port=445))
+        assert "SMB" in advice.what
+        assert any(command.tool == "smbclient" for command in advice.commands)
+
+
+def test_ssh_advises_against_brute_forcing_first():
+    advice = guidance.guidance_for(TARGET, _port(service="ssh", port=22))
+    joined = " ".join(advice.checks).lower()
+    assert "brute" in joined  # the point is to say: don't, not yet
+
+
+def test_dns_is_matched_on_nmaps_service_name_domain():
+    # Nmap names the DNS service "domain", not "dns".
+    advice = guidance.guidance_for(TARGET, _port(service="domain", port=53))
+    assert "Domain Name System" in advice.what
+    commands = " ".join(command.command for command in advice.commands)
+    assert "axfr" in commands
+
+
+def test_every_new_producer_warns_when_the_service_was_guessed():
+    for name, portnum in (("ftp", 21), ("microsoft-ds", 445), ("ssh", 22),
+                          ("domain", 53)):
+        advice = guidance.guidance_for(
+            TARGET, _port(service=name, port=portnum, method="table")
+        )
+        assert advice.caution is not None
+        assert "guessed from the port number" in advice.caution

@@ -120,6 +120,22 @@ def _searchsploit_lead(port: PortResult) -> str | None:
     )
 
 
+def _guessed_caution(port: PortResult, service_label: str) -> str | None:
+    """
+    The standard "confirm this first" heads-up, shared by every
+    producer, for when the service was only guessed from the port
+    number. Keeps the wording identical across services.
+    """
+    if not _was_guessed(port):
+        return None
+    return (
+        "This service was guessed from the port number, not confirmed by a "
+        f"probe. Enable service/version detection and scan again before "
+        f"trusting that it is {service_label} - the suggestions here assume "
+        "it is."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Per-service producers
 # ---------------------------------------------------------------------------
@@ -264,15 +280,161 @@ def _generic_guidance(target: str, port: PortResult) -> Guidance:
     )
 
 
+def _ftp_guidance(target: str, port: PortResult) -> Guidance:
+    notes = []
+    lead = _searchsploit_lead(port)
+    if lead:
+        notes.append(lead)
+
+    return Guidance(
+        what="File Transfer Protocol.",
+        why=(
+            "A frequent quick win: it often allows anonymous login, and the "
+            "files it serves - or accepts, if the directory is writable - can "
+            "hand you credentials, source code or a foothold."
+        ),
+        checks=(
+            "Try an anonymous login (user 'anonymous', any password) and list "
+            "what is there.",
+            "Download anything readable and check it for credentials or clues.",
+            "Test whether you can upload - a writable FTP root is sometimes a "
+            "way onto the box.",
+        ),
+        commands=(
+            SuggestedCommand(
+                f"ftp {target}",
+                "connect, then log in as 'anonymous' to test anonymous access",
+                "ftp",
+            ),
+        ),
+        notes=tuple(notes),
+        caution=_guessed_caution(port, "FTP"),
+    )
+
+
+def _smb_guidance(target: str, port: PortResult) -> Guidance:
+    notes = []
+    lead = _searchsploit_lead(port)
+    if lead:
+        notes.append(lead)
+
+    return Guidance(
+        what="Windows file sharing (SMB/CIFS).",
+        why=(
+            "Commonly misconfigured on lab boxes. A null (unauthenticated) "
+            "session can often list shares, users and the OS version, and "
+            "sometimes read files outright."
+        ),
+        checks=(
+            "List shares with a null session - no username or password.",
+            "Connect to any interesting share and look for readable files.",
+            "Enumerate users, groups and the OS version for later use.",
+        ),
+        commands=(
+            SuggestedCommand(
+                f"smbclient -L //{target}/ -N",
+                "list shares with no credentials",
+                "smbclient",
+            ),
+            SuggestedCommand(
+                f"enum4linux -a {target}",
+                "broad SMB enumeration: shares, users and OS",
+                "enum4linux",
+            ),
+        ),
+        notes=tuple(notes),
+        caution=_guessed_caution(port, "SMB"),
+    )
+
+
+def _ssh_guidance(target: str, port: PortResult) -> Guidance:
+    notes = []
+    lead = _searchsploit_lead(port)
+    if lead:
+        notes.append(lead)
+
+    return Guidance(
+        what="Secure Shell - remote administration.",
+        why=(
+            "Almost always open and almost never the initial way in by itself: "
+            "modern SSH is hard to attack blind, so don't burn time "
+            "brute-forcing it. Its value is later, once you have found "
+            "credentials elsewhere."
+        ),
+        checks=(
+            "Record the version string and host key - useful for spotting a "
+            "reused key or a known-vulnerable build.",
+            "Note which authentication methods it offers (password versus "
+            "key-only).",
+            "Come back to it with any usernames or credentials you find on "
+            "other services rather than brute-forcing it first.",
+        ),
+        commands=(
+            SuggestedCommand(
+                f"nc {target} {port.port}",
+                "grab the SSH banner and version",
+                "nc",
+            ),
+        ),
+        notes=tuple(notes),
+        caution=_guessed_caution(port, "SSH"),
+    )
+
+
+def _dns_guidance(target: str, port: PortResult) -> Guidance:
+    notes = []
+    lead = _searchsploit_lead(port)
+    if lead:
+        notes.append(lead)
+
+    return Guidance(
+        what="Domain Name System.",
+        why=(
+            "A misconfigured DNS server may allow a zone transfer, which dumps "
+            "every record it holds - internal hostnames, subdomains and "
+            "addresses you would otherwise never see. Quick to test and "
+            "occasionally a jackpot."
+        ),
+        checks=(
+            "Attempt a zone transfer - you need a domain name, taken from a TLS "
+            "certificate, a web vhost or the box's own hostname.",
+            "Do forward and reverse lookups to map names to addresses.",
+            "Note the server software for known issues.",
+        ),
+        commands=(
+            SuggestedCommand(
+                f"dig axfr @{target} <domain>",
+                "attempt a zone transfer (replace <domain> with a known name)",
+                "dig",
+            ),
+        ),
+        notes=tuple(notes),
+        caution=_guessed_caution(port, "DNS"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 #
 # A plain lookup from service name to producer. Adding a service later
-# is one entry here plus one producer function above - no framework,
-# no registration machinery.
+# is one (service set, producer) pair here plus one producer function
+# above - no framework, no registration machinery. Service names are
+# Nmap's own: DNS is "domain", Windows SMB is usually "microsoft-ds".
 
-_PRODUCERS = {service: _http_guidance for service in _HTTP_SERVICES}
+_SERVICE_PRODUCERS = (
+    (_HTTP_SERVICES, _http_guidance),
+    ({"ftp"}, _ftp_guidance),
+    ({"microsoft-ds", "netbios-ssn", "smb"}, _smb_guidance),
+    ({"ssh"}, _ssh_guidance),
+    ({"domain", "dns"}, _dns_guidance),
+)
+
+_PRODUCERS = {
+    service: producer
+    for services, producer in _SERVICE_PRODUCERS
+    for service in services
+}
 
 
 def guidance_for(target: str, port: PortResult) -> Guidance | None:
