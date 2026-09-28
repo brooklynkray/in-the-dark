@@ -951,3 +951,45 @@ def test_sudo_is_never_asked_for_when_the_scan_does_not_need_it(monkeypatch):
     calls = run_main_with(monkeypatch, scan.ScanConfig(), sudo_grants=True)
     assert calls["authenticated"] == 0
     assert len(calls["ran"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# OS guesses vs an exact OS match
+# ---------------------------------------------------------------------------
+#
+# Nmap only calls a 100% match exact. Anything lower must never be
+# presented with more certainty than Nmap itself claims.
+
+NO_EXACT_MATCH = "no exact match"
+
+
+def _display_os(capsys, *matches):
+    main.display_scan_results(_up_host(os_matches=tuple(matches)))
+    return capsys.readouterr().out
+
+
+def test_os_guesses_without_an_exact_match_are_labelled_as_guesses(capsys):
+    output = _display_os(
+        capsys,
+        results.OsMatch("Linux 5.0 - 6.2", 97),
+        results.OsMatch("Linux 6.8", 93),
+    )
+    assert "Closest OS guesses (no exact match)" in output
+    assert "treat them as leads, not facts" in output
+    assert "Linux 5.0 - 6.2 (97%)" in output
+
+
+def test_an_exact_os_match_is_not_labelled_as_a_guess(capsys):
+    output = _display_os(
+        capsys,
+        results.OsMatch("Linux 5.4", 100),
+        results.OsMatch("Linux 4.15", 95),
+    )
+    assert "OS details" in output
+    assert NO_EXACT_MATCH not in output
+    assert "Linux 5.4 (100%)" in output
+
+
+def test_a_missing_accuracy_is_never_treated_as_exact(capsys):
+    output = _display_os(capsys, results.OsMatch("Linux 5.4", None))
+    assert NO_EXACT_MATCH in output

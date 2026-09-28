@@ -740,11 +740,23 @@ def display_scan_results(scan_result, scan_config=None):
         cli.info("No ports reported.")
 
     if host.os_matches:
-        cli.list_items("OS guesses", [
+        os_lines = [
             f"{match.name} ({match.accuracy}%)"
             if match.accuracy is not None else match.name
             for match in host.os_matches[:3]
-        ])
+        ]
+        # Nmap treats 100% as a perfect match; anything lower is a guess,
+        # which its own output reports as "No exact OS matches for host".
+        # A missing accuracy is never assumed to be exact.
+        if any(match.accuracy == 100 for match in host.os_matches):
+            cli.list_items("OS details", os_lines)
+        else:
+            cli.list_items("Closest OS guesses (no exact match)", os_lines)
+            cli.info(
+                "Nmap found no exact OS match. These are its closest "
+                "guesses, ranked by how well the target's responses "
+                "matched - treat them as leads, not facts."
+            )
     elif (
         scan_config is not None
         and scan_config.os_detection
