@@ -79,7 +79,7 @@ This is a tool that runs other programs and handles data from hosts it scans, so
 - **No free-text Nmap flags.** Every option maps to a fixed, allow-listed flag. A free-text flag box would be an injection surface even without a shell (for example `--script` or output options).
 - **Targets are validated before use.** Only IP addresses and well-formed hostnames are accepted, so a value that starts with `-` can never be read by Nmap as an option.
 - **Nmap output is untrusted input.** Banners and product strings come from the target. The XML parser never crashes on malformed or unexpected input, and treats field contents as inert data.
-- **Temporary XML output** uses an unpredictable `mkstemp` path and is always removed afterwards.
+- **Temporary XML output** goes in a private, unpredictably named `mkdtemp` directory (mode 0700) and is always removed afterwards. A shared `/tmp` file would be refused to a root-run Nmap by the kernel's `fs.protected_regular` hardening.
 - **Saved results** get generated file names (never built from the target, so no path traversal), are created without overwriting anything, and are readable only by your user (`0600`). Odd characters from the target are stored as `\uXXXX` escapes.
 
 ## Results Files

@@ -532,12 +532,21 @@ def test_preview_has_no_ipv6_annotation_for_ipv4_target(capsys):
 # Temp-file lifecycle: _create_xml_output_path() / _cleanup_xml_output_path()
 # ---------------------------------------------------------------------------
 
-def test_create_xml_output_path_creates_a_real_empty_file():
+def _simulate_nmap_writing(path):
+    with open(path, "w", encoding="utf-8") as xml_file:
+        xml_file.write("<nmaprun/>")
+
+
+def test_create_xml_output_path_reserves_a_path_in_a_private_directory():
     path = main._create_xml_output_path()
     try:
-        assert os.path.exists(path)
+        directory = os.path.dirname(path)
         assert path.endswith(".xml")
-        assert os.path.getsize(path) == 0
+        assert os.path.isdir(directory)
+        # Only this user can enter the directory.
+        assert os.stat(directory).st_mode & 0o777 == 0o700
+        # The file itself is left for Nmap to create.
+        assert not os.path.exists(path)
     finally:
         main._cleanup_xml_output_path(path)
 
@@ -547,22 +556,39 @@ def test_create_xml_output_path_returns_a_unique_path_each_time():
     path_two = main._create_xml_output_path()
     try:
         assert path_one != path_two
+        assert os.path.dirname(path_one) != os.path.dirname(path_two)
     finally:
         main._cleanup_xml_output_path(path_one)
         main._cleanup_xml_output_path(path_two)
 
 
-def test_cleanup_xml_output_path_removes_the_file():
+def test_cleanup_xml_output_path_removes_the_file_and_its_directory():
     path = main._create_xml_output_path()
-    assert os.path.exists(path)
+    _simulate_nmap_writing(path)
     main._cleanup_xml_output_path(path)
     assert not os.path.exists(path)
+    assert not os.path.exists(os.path.dirname(path))
 
 
-def test_cleanup_xml_output_path_does_not_raise_if_already_removed():
+def test_cleanup_xml_output_path_does_not_raise_if_nmap_never_wrote_it():
     path = main._create_xml_output_path()
-    os.remove(path)
     main._cleanup_xml_output_path(path)  # must not raise
+    assert not os.path.exists(os.path.dirname(path))
+
+
+def test_cleanup_xml_output_path_never_deletes_anything_else(tmp_path):
+    # Not a recursive delete: if the directory holds anything other
+    # than the XML file, the file goes but everything else stays.
+    path = tmp_path / "nmap.xml"
+    _simulate_nmap_writing(path)
+    unrelated = tmp_path / "keep-me.txt"
+    unrelated.write_text("important", encoding="utf-8")
+
+    main._cleanup_xml_output_path(str(path))
+
+    assert not path.exists()
+    assert unrelated.exists()
+    assert tmp_path.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -631,8 +657,8 @@ def test_run_and_display_scan_skips_structured_display_when_xml_missing(
 def test_run_and_display_scan_skips_structured_display_when_xml_empty(
     monkeypatch, capsys, tmp_path
 ):
-    # The realistic "executable not found" case: _create_xml_output_path()
-    # creates an empty file, but Nmap never runs, so it stays empty.
+    # An empty XML file (e.g. Nmap started but wrote nothing) must not
+    # produce a structured results section.
     xml_path = tmp_path / "empty.xml"
     xml_path.write_text("", encoding="utf-8")
 

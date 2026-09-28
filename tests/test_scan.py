@@ -305,7 +305,7 @@ def test_xml_output_path_value_is_its_own_element_not_fused_with_flag():
 ])
 def test_hostile_xml_output_path_is_never_split_or_concatenated(hostile_value):
     # Defense in depth, same as custom_ports: even though this value
-    # is always a real tempfile.mkstemp() path in practice, never a
+    # is always a path inside a tempfile.mkdtemp() directory, never a
     # user-entered string, build_argv() must not rely on that being
     # true - it must keep whatever string is here as one argv element
     # regardless of where it came from.
