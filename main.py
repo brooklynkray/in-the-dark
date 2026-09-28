@@ -882,7 +882,7 @@ def show_startup_sequence():
     cli.banner()
     cli.rule()
 
-    # get_environment() shells out to whoami / id / sudo. On a stripped
+    # get_environment() shells out to whoami and id. On a stripped
     # -down system one of those core binaries may be missing, which
     # surfaces as FileNotFoundError - recoverable, since the user can
     # still reach the target prompt without environment detail. Any
@@ -898,10 +898,12 @@ def show_startup_sequence():
     else:
         cli.status("Initialising environment", "OK")
 
+        # Only the current session's privilege is reported. Whether this
+        # user *could* elevate is deliberately not guessed at here: the
+        # only reliable answer comes from sudo itself, at the moment a
+        # scan actually needs it.
         if env.elevated:
             privilege_result = f"OK ({env.user}, elevated)"
-        elif env.sudo_available:
-            privilege_result = f"OK ({env.user}, sudo available)"
         else:
             privilege_result = f"OK ({env.user}, unprivileged)"
         cli.status("Checking privileges", privilege_result)
